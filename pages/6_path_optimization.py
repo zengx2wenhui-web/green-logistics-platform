@@ -215,7 +215,67 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
 
         progress_bar.progress(0.4)
 
-        # ======== Step C: VRP求解 ========
+        # ======== Step C: K-Means中转仓选址 ========
+        status_text.text("🏭 Step C: K-Means中转仓选址...")
+        progress_bar.progress(0.45)
+
+        venue_nodes_list = [n for n in nodes if not n.get("is_warehouse", False)]
+
+        if len(venue_nodes_list) <= 5:
+            optimal_k = 1
+            clustering_result = {
+                "optimal_k": 1,
+                "clusters": [{"cluster_id": 0, "centroid": None, "venues": venue_nodes_list}],
+                "labels": [0] * len(venue_nodes_list)
+            }
+            st.info(f"ℹ️ 场馆数量≤5，不设中转仓，直接从仓库配送")
+            clustering_method = "无中转仓"
+        else:
+            try:
+                from utils.clustering import select_warehouse_locations
+
+                venue_coords = [(v["lng"], v["lat"]) for v in venue_nodes_list]
+                venue_weights = [v.get("demand", 0) for v in venue_nodes_list]
+
+                clustering_result = select_warehouse_locations(
+                    venue_coords,
+                    venue_weights,
+                    max_warehouses=6
+                )
+
+                optimal_k = clustering_result.get("optimal_k", 1)
+                st.success(f"✅ K-Means选址完成，最优中转仓数量: {optimal_k}")
+                clustering_method = f"K-Means (K={optimal_k})"
+
+                # 显示中转仓位置
+                if optimal_k > 1 and clustering_result.get("warehouses"):
+                    st.markdown("**中转仓位置：**")
+                    wh_cols = st.columns(min(optimal_k, 3))
+                    for i, wh in enumerate(clustering_result.get("warehouses", [])[:3]):
+                        with wh_cols[i]:
+                            st.write(f"🏭 中转仓{i+1}: ({wh.get('lng', 0):.4f}, {wh.get('lat', 0):.4f})")
+
+            except Exception as e:
+                st.warning(f"K-Means选址失败: {e}，不使用中转仓")
+                optimal_k = 1
+                clustering_result = {
+                    "optimal_k": 1,
+                    "clusters": [{"cluster_id": 0, "centroid": None, "venues": venue_nodes_list}],
+                    "labels": [0] * len(venue_nodes_list)
+                }
+                clustering_method = "选址失败，无中转仓"
+
+        # 为节点分配聚类ID
+        for node in nodes:
+            if not node.get("is_warehouse", False):
+                for i, v in enumerate(venue_nodes_list):
+                    if node["name"] == v["name"]:
+                        node["cluster_id"] = clustering_result.get("labels", [0] * len(venue_nodes_list))[i] if "labels" in clustering_result else 0
+                        break
+
+        progress_bar.progress(0.5)
+
+        # ======== Step D: VRP求解 ========
         status_text.text("🚚 Step C: VRP求解...")
         progress_bar.progress(0.45)
 
@@ -298,7 +358,7 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
         progress_bar.progress(0.6)
 
         # ======== Step D: 生成调度方案 ========
-        status_text.text("📋 Step D: 生成调度方案...")
+        status_text.text("📋 Step E: 生成调度方案...")
         progress_bar.progress(0.65)
 
         route_results = []
@@ -373,7 +433,7 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
         progress_bar.progress(0.75)
 
         # ======== 计算碳排放对比 ========
-        status_text.text("🌿 Step D: 计算碳排放对比...")
+        status_text.text("🌿 Step F: 计算碳排放对比...")
         progress_bar.progress(0.8)
 
         # 基线碳排放（每场馆单独跑一趟）
@@ -400,6 +460,7 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
             "num_vehicles_used": len(routes),
             "optimization_method": optimization_method,
             "distance_method": distance_method,
+            "clustering_method": clustering_method,
             "vehicle_type": vehicle_name,
             "vehicle_capacity_kg": vehicle_capacity,
             "emission_factor": emission_factor,
