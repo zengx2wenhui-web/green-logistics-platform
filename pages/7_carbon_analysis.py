@@ -6,7 +6,7 @@ import json
 
 st.set_page_config(page_title="碳排放分析", page_icon="🔬")
 
-st.title("🔬 Step 5：碳排放分析")
+st.title("🔬 Step 7：碳排放分析")
 st.markdown("基于车型库的碳排放对比分析")
 
 # ===================== 加载车型库 =====================

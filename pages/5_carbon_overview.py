@@ -6,7 +6,7 @@ import json
 
 st.set_page_config(page_title="碳排放概览", page_icon="📊")
 
-st.title("📊 Step 7：碳排放概览")
+st.title("📊 Step 5：碳排放概览")
 st.markdown("赛事物流碳足迹实时监控")
 
 # ===================== 检查优化结果 =====================
