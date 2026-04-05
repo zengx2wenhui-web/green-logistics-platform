@@ -2,7 +2,8 @@
 import requests
 import time
 import logging
-from typing import Tuple, Optional
+import math
+from typing import Tuple, Optional, List, Dict
 from threading import Lock
 
 logging.basicConfig(level=logging.INFO)
@@ -33,6 +34,27 @@ def _acquire_rate_limit() -> None:
             _request_timestamps = [ts for ts in _request_timestamps if current_time - ts < 1.0]
 
         _request_timestamps.append(time.time())
+
+
+def haversine_distance(coord1: Tuple[float, float], coord2: Tuple[float, float]) -> float:
+    """
+    用Haversine公式计算两个经纬度之间的直线距离(km)
+
+    Args:
+        coord1: 起点坐标 (lng, lat)
+        coord2: 终点坐标 (lng, lat)
+
+    Returns:
+        直线距离，单位 km
+    """
+    R = 6371.0
+    lon1, lat1 = math.radians(coord1[0]), math.radians(coord1[1])
+    lon2, lat2 = math.radians(coord2[0]), math.radians(coord2[1])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    c = 2 * math.asin(math.sqrt(a))
+    return R * c
 
 
 def geocode(address: str, api_key: str) -> Optional[Tuple[float, float]]:
@@ -124,6 +146,45 @@ def geocode(address: str, api_key: str) -> Optional[Tuple[float, float]]:
         logger.error(f"[高德地理编码] 未知错误: {e}")
         print(f"[高德地理编码] 错误: 未知错误 ({e})")
         return None
+
+
+def reverse_geocode(lng: float, lat: float, api_key: str) -> str:
+    """
+    调用高德逆地理编码API，把经纬度转换为具体地址。
+
+    Args:
+        lng: 经度
+        lat: 纬度
+        api_key: 高德地图API密钥
+
+    Returns:
+        地址字符串，失败返回 "未知地址(经度, 纬度)"
+    """
+    if not api_key or not api_key.strip():
+        return f"未知地址({lng:.4f}, {lat:.4f})"
+
+    url = "https://restapi.amap.com/v3/geocode/regeo"
+    params = {
+        "key": api_key,
+        "location": f"{lng},{lat}",
+        "extensions": "base",
+        "output": "json"
+    }
+
+    try:
+        _acquire_rate_limit()
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get("status") == "1" and data.get("regeocode"):
+            address = data["regeocode"].get("formatted_address", "")
+            if address:
+                return address
+        return f"未知地址({lng:.4f}, {lat:.4f})"
+    except Exception as e:
+        logger.error(f"[高德逆地理编码] 错误: {e}")
+        return f"未知地址({lng:.4f}, {lat:.4f})"
 
 
 def get_driving_distance(

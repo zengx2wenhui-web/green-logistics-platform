@@ -238,7 +238,7 @@ def main():
             ("🚛 Step 4: 车辆配置", "pages/4_vehicles.py"),
             ("🔬 Step 5: 碳排放分析", "pages/5_carbon_analysis.py"),
             ("📊 Step 6: 碳排放概览", "pages/6_carbon_overview.py"),
-            ("🗺️ Step 7: 路径优化", "pages/7_path_optimization.py"),
+            ("🗺️ Step 7: 路径优化", "pages/7_carbon_analysis.py"),
             ("📋 Step 8: 优化结果", "pages/8_results.py"),
         ]
 
@@ -337,7 +337,7 @@ def main():
         - Folium地图标记
         - 仓库容量配置
 
-        **[打开页面 →](pages/1_仓库设置.py)**
+        **[打开页面 →](pages/1_warehouse.py)**
         """)
 
     with col2:
@@ -348,7 +348,7 @@ def main():
         - 在线表单录入
         - 预置场馆快速添加
 
-        **[打开页面 →](pages/2_场馆录入.py)**
+        **[打开页面 →](pages/2_venues.py)**
         """)
 
     with col3:
@@ -359,7 +359,7 @@ def main():
         - 在线表单录入
         - 按场馆汇总统计
 
-        **[打开页面 →](pages/3_物资需求.py)**
+        **[打开页面 →](pages/3_materials.py)**
         """)
 
     col4, col5, col6 = st.columns(3)
@@ -372,7 +372,7 @@ def main():
         - 自定义载重和碳因子
         - 快捷配置模板
 
-        **[打开页面 →](pages/4_车辆配置.py)**
+        **[打开页面 →](pages/4_vehicles.py)**
         """)
 
     with col5:
@@ -383,7 +383,7 @@ def main():
         - 不同方案碳排放柱状图
         - 减排潜力排名
 
-        **[打开页面 →](pages/5_碳排放分析.py)**
+        **[打开页面 →](pages/5_path_optimization.py)**
         """)
 
     with col6:
@@ -394,7 +394,7 @@ def main():
         - 干线vs终端碳排放饼图
         - 种树等效指标
 
-        **[打开页面 →](pages/6_碳排放概览.py)**
+        **[打开页面 →](pages/6_carbon_overview.py)**
         """)
 
     col7, col8 = st.columns(2)
@@ -407,7 +407,7 @@ def main():
         - K-Means中转仓选址
         - VRP路径优化（OR-Tools）
 
-        **[打开页面 →](pages/7_路径优化.py)**
+        **[打开页面 →](pages/7_carbon_analysis.py)**
         """)
 
     with col8:
@@ -418,7 +418,7 @@ def main():
         - 基线vs优化碳排放对比
         - 调度详情CSV导出
 
-        **[打开页面 →](pages/8_优化结果.py)**
+        **[打开页面 →](pages/8_results.py)**
         """)
 
     st.markdown("---")

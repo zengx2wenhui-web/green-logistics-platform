@@ -1,282 +1,99 @@
-"""距离矩阵构建模块 - 调用高德API构建N×N距离矩阵，支持缓存和进度回调"""
+"""距离矩阵构建模块 - 本地Haversine公式计算，支持缓存"""
 import json
 import os
 import hashlib
-import time
 from typing import List, Tuple, Dict, Optional, Callable
-import requests
-
-# 高德API请求频率限制：每秒不超过10次
-_request_timestamps: List[float] = []
-_RATE_LIMIT = 10
-_lock_active = False
+import numpy as np
+import math
 
 
-def _acquire_rate_limit() -> None:
-    """获取请求令牌，超过限制则等待"""
-    global _request_timestamps, _lock_active
-    current_time = time.time()
+def haversine_distance(lng1: float, lat1: float, lng2: float, lat2: float) -> float:
+    """
+    用 Haversine 公式计算两个经纬度之间的直线距离(km)
 
-    # 清理1秒前的所有时间戳
-    _request_timestamps = [ts for ts in _request_timestamps if current_time - ts < 1.0]
+    Args:
+        lng1: 起点经度
+        lat1: 起点纬度
+        lng2: 终点经度
+        lat2: 终点纬度
 
-    if len(_request_timestamps) >= _RATE_LIMIT:
-        sleep_time = 1.0 - (current_time - _request_timestamps[0])
-        if sleep_time > 0:
-            time.sleep(sleep_time)
-        current_time = time.time()
-        _request_timestamps = [ts for ts in _request_timestamps if current_time - ts < 1.0]
-
-    _request_timestamps.append(time.time())
-
-
-def _generate_cache_key(coords: List[Tuple[float, float]]) -> str:
-    """根据坐标列表生成缓存文件名的hash"""
-    coord_str = ";".join([f"{lng},{lat}" for lng, lat in coords])
-    return hashlib.md5(coord_str.encode()).hexdigest()
-
-
-def _get_cache_path(cache_key: str) -> str:
-    """获取缓存文件路径"""
-    cache_dir = "data/cache"
-    if not os.path.exists(cache_dir):
-        os.makedirs(cache_dir, exist_ok=True)
-    return os.path.join(cache_dir, f"distance_matrix_{cache_key}.json")
-
-
-def _save_cache(cache_path: str, matrix: Dict) -> None:
-    """保存矩阵到缓存文件"""
-    with open(cache_path, "w", encoding="utf-8") as f:
-        json.dump(matrix, f, ensure_ascii=False, indent=2)
-
-
-def _load_cache(cache_path: str) -> Optional[Dict]:
-    """从缓存文件加载矩阵"""
-    if os.path.exists(cache_path):
-        try:
-            with open(cache_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return None
-    return None
+    Returns:
+        直线距离，单位 km
+    """
+    R = 6371  # 地球半径(km)
+    lat1_rad = math.radians(lat1)
+    lat2_rad = math.radians(lat2)
+    dlat = lat2_rad - lat1_rad
+    dlng = math.radians(lng2 - lng1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlng / 2) ** 2
+    c = 2 * math.asin(math.sqrt(a))
+    return R * c
 
 
 def build_distance_matrix(
-    coords: List[Tuple[float, float]],
-    api_key: str,
-    progress_callback: Optional[Callable[[float, str], None]] = None,
-    use_cache: bool = True
-) -> Optional[List[List[float]]]:
+    nodes: List[Dict],
+    road_factor: float = 1.4,
+    progress_callback: Optional[Callable[[float, str], None]] = None
+) -> np.ndarray:
     """
-    构建N×N距离矩阵
+    用 Haversine 公式构建距离矩阵。
 
-    Args:
-        coords: 坐标列表，每个元素为 (lng, lat)
-        api_key: 高德地图API密钥
-        progress_callback: 进度回调函数，签名为 (progress: float, message: str) -> None
-        use_cache: 是否使用缓存（默认True）
+    参数：
+    - nodes: 节点列表，每项包含 name, lng, lat
+    - road_factor: 道路弯曲系数，直线距离 × 此系数 ≈ 实际驾车距离
+      城市内部建议 1.3-1.5，跨城市建议 1.2-1.4
+    - progress_callback: 进度回调函数，签名为 (progress: float, message: str) -> None
 
-    Returns:
-        N×N距离矩阵（公里），失败返回None
+    返回：N×N 的 numpy 数组，单位 km
     """
-    if not coords or len(coords) < 2:
-        print("[距离矩阵] 错误: 坐标列表为空或少于2个点")
-        return None
+    n = len(nodes)
+    matrix = np.zeros((n, n))
 
-    n = len(coords)
-
-    # 检查缓存
-    if use_cache:
-        cache_key = _generate_cache_key(coords)
-        cache_path = _get_cache_path(cache_key)
-        cached = _load_cache(cache_path)
-        if cached and cached.get("n") == n:
-            print(f"[距离矩阵] 从缓存加载: {cache_path}")
-            return cached.get("matrix")
-
-    # 初始化距离矩阵
-    distance_matrix = [[0.0] * n for _ in range(n)]
-
-    total_requests = n * (n - 1) // 2  # 上三角矩阵的请求数
+    total_ops = n * (n - 1) // 2
     completed = 0
 
     if progress_callback:
-        progress_callback(0.0, f"开始构建 {n}×{n} 距离矩阵，共需 {total_requests} 次API请求...")
-
-    url = "https://restapi.amap.com/v3/direction/driving"
+        progress_callback(0.0, f"开始构建 {n}×{n} 距离矩阵...")
 
     for i in range(n):
         for j in range(i + 1, n):
-            origin = coords[i]
-            destination = coords[j]
-
-            params = {
-                "key": api_key,
-                "origin": f"{origin[0]},{origin[1]}",
-                "destination": f"{destination[0]},{destination[1]}"
-            }
-
-            success = False
-            for retry in range(3):
-                try:
-                    _acquire_rate_limit()
-                    response = requests.get(url, params=params, timeout=10)
-                    data = response.json()
-
-                    if data.get("status") == "1" and data.get("route", {}).get("paths"):
-                        distance = float(data["route"]["paths"][0]["distance"]) / 1000  # 米转公里
-                        distance_matrix[i][j] = distance
-                        distance_matrix[j][i] = distance  # 对称
-                        success = True
-                    else:
-                        errcode = data.get("errcode", "")
-                        errmsg = data.get("errmsg", "未知错误")
-                        print(f"[距离矩阵] API错误 ({i},{j}): {errcode} - {errmsg}")
-
-                    break  # 成功或API错误，不再重试
-
-                except requests.exceptions.Timeout:
-                    print(f"[距离矩阵] 请求超时 ({i},{j})，重试 {retry + 1}/3")
-                    time.sleep(1)
-
-                except requests.exceptions.ConnectionError:
-                    print(f"[距离矩阵] 网络错误 ({i},{j})，重试 {retry + 1}/3")
-                    time.sleep(2)
-
-                except Exception as e:
-                    print(f"[距离矩阵] 未知错误 ({i},{j}): {e}")
-                    break
-
-            if not success:
-                # 使用Haversine距离作为fallback
-                from utils.amap_api import haversine_distance
-                fallback_dist = haversine_distance(origin, destination)
-                distance_matrix[i][j] = fallback_dist
-                distance_matrix[j][i] = fallback_dist
-                print(f"[距离矩阵] 使用Haversine fallback: {fallback_dist:.2f}km")
+            dist = haversine_distance(
+                nodes[i]["lng"], nodes[i]["lat"],
+                nodes[j]["lng"], nodes[j]["lat"]
+            )
+            road_dist = dist * road_factor
+            matrix[i][j] = round(road_dist, 2)
+            matrix[j][i] = round(road_dist, 2)
 
             completed += 1
-
-            # 进度回调
-            if progress_callback:
-                progress = completed / total_requests
-                msg = f"处理中: ({i},{j}) - {completed}/{total_requests}"
-                progress_callback(progress, msg)
-
-    # 保存缓存
-    if use_cache:
-        cache_data = {
-            "n": n,
-            "coords": coords,
-            "matrix": distance_matrix
-        }
-        _save_cache(cache_path, cache_data)
-        print(f"[距离矩阵] 缓存已保存: {cache_path}")
+            if progress_callback and completed % max(1, total_ops // 20) == 0:
+                progress = completed / total_ops
+                progress_callback(progress, f"处理中: {completed}/{total_ops}")
 
     if progress_callback:
         progress_callback(1.0, "距离矩阵构建完成！")
 
-    return distance_matrix
+    return matrix
 
 
-def build_time_matrix(
+def build_distance_matrix_from_coords(
     coords: List[Tuple[float, float]],
-    api_key: str,
-    progress_callback: Optional[Callable[[float, str], None]] = None,
-    use_cache: bool = True
-) -> Optional[List[List[float]]]:
+    road_factor: float = 1.4,
+    progress_callback: Optional[Callable[[float, str], None]] = None
+) -> List[List[float]]:
     """
-    构建N×N时间矩阵（分钟）
+    用 Haversine 公式构建距离矩阵（兼容旧接口）。
 
-    Args:
-        coords: 坐标列表，每个元素为 (lng, lat)
-        api_key: 高德地图API密钥
-        progress_callback: 进度回调函数
-        use_cache: 是否使用缓存
+    参数：
+    - coords: 坐标列表，每个元素为 (lng, lat)
+    - road_factor: 道路弯曲系数
+    - progress_callback: 进度回调函数
 
-    Returns:
-        N×N时间矩阵（分钟），失败返回None
+    返回：N×N 的二维列表，单位 km
     """
-    if not coords or len(coords) < 2:
-        print("[时间矩阵] 错误: 坐标列表为空或少于2个点")
-        return None
-
-    n = len(coords)
-
-    # 检查缓存
-    if use_cache:
-        cache_key = _generate_cache_key(coords) + "_time"
-        cache_path = _get_cache_path(cache_key)
-        cached = _load_cache(cache_path)
-        if cached and cached.get("n") == n:
-            print(f"[时间矩阵] 从缓存加载: {cache_path}")
-            return cached.get("matrix")
-
-    # 初始化时间矩阵
-    time_matrix = [[0.0] * n for _ in range(n)]
-
-    total_requests = n * (n - 1) // 2
-    completed = 0
-
-    if progress_callback:
-        progress_callback(0.0, f"开始构建 {n}×{n} 时间矩阵...")
-
-    url = "https://restapi.amap.com/v3/direction/driving"
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            origin = coords[i]
-            destination = coords[j]
-
-            params = {
-                "key": api_key,
-                "origin": f"{origin[0]},{origin[1]}",
-                "destination": f"{destination[0]},{destination[1]}"
-            }
-
-            success = False
-            for retry in range(3):
-                try:
-                    _acquire_rate_limit()
-                    response = requests.get(url, params=params, timeout=10)
-                    data = response.json()
-
-                    if data.get("status") == "1" and data.get("route", {}).get("paths"):
-                        duration = float(data["route"]["paths"][0]["duration"]) / 60  # 秒转分钟
-                        time_matrix[i][j] = duration
-                        time_matrix[j][i] = duration
-                        success = True
-                    break
-
-                except Exception as e:
-                    print(f"[时间矩阵] 错误 ({i},{j}): {e}")
-                    break
-
-            if not success:
-                # 使用估算：假设平均速度30km/h
-                from utils.amap_api import haversine_distance
-                dist = haversine_distance(origin, destination)
-                time_matrix[i][j] = dist / 30 * 60  # 分钟
-                time_matrix[j][i] = time_matrix[i][j]
-
-            completed += 1
-
-            if progress_callback:
-                progress_callback(completed / total_requests, f"处理中: ({i},{j})")
-
-    # 保存缓存
-    if use_cache:
-        cache_data = {
-            "n": n,
-            "coords": coords,
-            "matrix": time_matrix
-        }
-        _save_cache(cache_path, cache_data)
-
-    if progress_callback:
-        progress_callback(1.0, "时间矩阵构建完成！")
-
-    return time_matrix
+    nodes = [{"lng": c[0], "lat": c[1]} for c in coords]
+    matrix = build_distance_matrix(nodes, road_factor, progress_callback)
+    return matrix.tolist()
 
 
 def get_matrix_info(matrix: List[List[float]]) -> Dict:
@@ -314,9 +131,12 @@ if __name__ == "__main__":
     def progress(prog: float, msg: str):
         print(f"[进度 {prog*100:.1f}%] {msg}")
 
-    # 注意：需要有效的API Key才能测试
-    # matrix = build_distance_matrix(test_coords, "YOUR_API_KEY", progress_callback=progress)
+    matrix = build_distance_matrix_from_coords(test_coords, road_factor=1.4, progress_callback=progress)
 
-    print("测试坐标:", test_coords)
-    print("矩阵大小:", len(test_coords), "×", len(test_coords))
-    print("API Key未提供，跳过实际API调用测试")
+    print("\n距离矩阵:")
+    for i, row in enumerate(matrix):
+        print(f"  节点{i}: {row}")
+
+    print(f"\n矩阵大小: {len(matrix)} × {len(matrix[0])}")
+    info = get_matrix_info(matrix)
+    print(f"统计信息: {info}")

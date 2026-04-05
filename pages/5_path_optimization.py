@@ -156,62 +156,50 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
         progress_bar.progress(0.05)
 
         # 节点列表：[仓库, 场馆1, 场馆2, ...]
+        # 只添加有坐标的场馆
         nodes = [{"name": warehouse["name"], "lng": warehouse["lng"], "lat": warehouse["lat"]}]
         node_demands = [0]  # 仓库需求为0
 
+        venues_with_coords = []
         for v in venues:
-            nodes.append({"name": v["name"], "lng": v["lng"], "lat": v["lat"]})
-            venue_demand = demands.get(v["name"], {})
-            if isinstance(venue_demand, dict):
-                total = venue_demand.get("总需求", sum(venue_demand.values()))
-            else:
-                total = float(venue_demand)
-            node_demands.append(total)
+            if v.get("lng") is not None and v.get("lat") is not None:
+                venues_with_coords.append(v)
+                nodes.append({"name": v["name"], "lng": v["lng"], "lat": v["lat"]})
+                venue_demand = demands.get(v["name"], {})
+                if isinstance(venue_demand, dict):
+                    total = venue_demand.get("总需求", sum(venue_demand.values()))
+                else:
+                    total = float(venue_demand)
+                node_demands.append(total)
 
         n = len(nodes)
+
+        # 检查仓库坐标
+        if nodes[0]["lng"] is None or nodes[0]["lat"] is None:
+            st.error("❌ 仓库坐标未设置，请先在【仓库设置】页面设置仓库坐标")
+            st.stop()
+
+        if n < 2:
+            st.error("❌ 需要至少1个有坐标的场馆，请先在【场馆录入】页面为场馆获取坐标")
+            st.stop()
+
         coords = [(node["lng"], node["lat"]) for node in nodes]
-        st.success(f"✅ 节点构建完成：1个仓库 + {n-1}个场馆")
+        st.success(f"✅ 节点构建完成：1个仓库 + {n-1}个有坐标的场馆（已跳过{len(venues)-len(venues_with_coords)}个无坐标场馆）")
         progress_bar.progress(0.1)
 
         # ======== Step B: 计算距离矩阵 ========
         status_text.text("📏 Step B: 计算距离矩阵...")
         progress_bar.progress(0.15)
 
-        if api_key:
-            try:
-                from utils.amap_api import get_driving_distance
-                distance_matrix = [[0.0] * n for _ in range(n)]
-                total_pairs = n * (n - 1) // 2
-                completed = 0
+        # 使用本地Haversine公式计算距离矩阵（快速且稳定）
+        from utils.distance_matrix import build_distance_matrix_from_coords
+        def progress_callback(prog, msg):
+            progress_bar.progress(0.15 + 0.25 * prog)
+            status_text.text(msg)
 
-                for i in range(n):
-                    for j in range(i + 1, n):
-                        result = get_driving_distance(
-                            (coords[i][0], coords[i][1]),
-                            (coords[j][0], coords[j][1]),
-                            api_key
-                        )
-                        if result:
-                            distance_matrix[i][j] = result[0]
-                            distance_matrix[j][i] = result[0]
-                        else:
-                            dist = haversine_distance(coords[i], coords[j]) * 1.3
-                            distance_matrix[i][j] = dist
-                            distance_matrix[j][i] = dist
-                        completed += 1
-                        if completed % 3 == 0:
-                            progress_bar.progress(0.15 + 0.25 * completed / total_pairs)
-
-                distance_method = "高德API"
-                st.success("✅ 距离矩阵计算完成（高德API）")
-            except Exception as e:
-                distance_matrix = build_distance_matrix_haversine(coords)
-                distance_method = f"Haversine(API失败:{str(e)[:20]})"
-                st.warning(f"高德API失败，使用Haversine: {e}")
-        else:
-            distance_matrix = build_distance_matrix_haversine(coords)
-            distance_method = "Haversine×1.3"
-            st.info("ℹ️ 未提供API密钥，使用Haversine距离×1.3估算")
+        distance_matrix = build_distance_matrix_from_coords(coords, road_factor=1.3, progress_callback=progress_callback)
+        distance_method = "Haversine×1.3"
+        st.success("✅ 距离矩阵计算完成（本地Haversine×1.3）")
 
         progress_bar.progress(0.4)
 
@@ -230,6 +218,7 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
             }
             st.info(f"ℹ️ 场馆数量≤5，不设中转仓，直接从仓库配送")
             clustering_method = "无中转仓"
+            depot_results = []
         else:
             try:
                 from utils.clustering import select_warehouse_locations
@@ -247,13 +236,38 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
                 st.success(f"✅ K-Means选址完成，最优中转仓数量: {optimal_k}")
                 clustering_method = f"K-Means (K={optimal_k})"
 
-                # 显示中转仓位置
+                # 显示中转仓位置（带地址逆地理编码）
                 if optimal_k > 1 and clustering_result.get("warehouses"):
-                    st.markdown("**中转仓位置：**")
-                    wh_cols = st.columns(min(optimal_k, 3))
-                    for i, wh in enumerate(clustering_result.get("warehouses", [])[:3]):
-                        with wh_cols[i]:
-                            st.write(f"🏭 中转仓{i+1}: ({wh.get('lng', 0):.4f}, {wh.get('lat', 0):.4f})")
+                    st.markdown("**📦 中转仓选址结果：**")
+                    depot_results = []
+                    labels = clustering_result.get("labels", [])
+                    for i, wh in enumerate(clustering_result.get("warehouses", [])[:optimal_k]):
+                        wh_lng = wh.get('lng', 0)
+                        wh_lat = wh.get('lat', 0)
+                        # 逆地理编码获取地址
+                        if api_key:
+                            from utils.amap_api import reverse_geocode
+                            address = reverse_geocode(wh_lng, wh_lat, api_key)
+                        else:
+                            address = f"({wh_lng:.4f}, {wh_lat:.4f}) 附近"
+                        # 获取该中转仓服务的场馆列表
+                        served_venue_indices = [j for j, label in enumerate(labels) if label == i]
+                        served_venue_names = [venue_nodes_list[j]["name"] for j in served_venue_indices] if venue_nodes_list else []
+                        served_venue_list = "、".join(served_venue_names[:5])
+                        if len(served_venue_names) > 5:
+                            served_venue_list += f" 等{len(served_venue_names)}个"
+                        depot_results.append({
+                            "中转仓编号": f"中转仓{i+1}",
+                            "建议地址": address,
+                            "经度": round(wh_lng, 6),
+                            "纬度": round(wh_lat, 6),
+                            "服务场馆数": len(served_venue_names),
+                            "服务场馆列表": served_venue_list
+                        })
+
+                    # 展示中转仓表格
+                    df_depots = pd.DataFrame(depot_results)
+                    st.dataframe(df_depots, use_container_width=True, hide_index=True)
 
             except Exception as e:
                 st.warning(f"K-Means选址失败: {e}，不使用中转仓")
@@ -264,6 +278,7 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
                     "labels": [0] * len(venue_nodes_list)
                 }
                 clustering_method = "选址失败，无中转仓"
+                depot_results = []
 
         # 为节点分配聚类ID
         for node in nodes:
@@ -421,6 +436,7 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
             "nodes": nodes,
             "routes": routes,
             "demands": demands,
+            "depot_results": depot_results,
             "timestamp": datetime.now().isoformat()
         }
 
@@ -434,14 +450,15 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
 
         # 简要结果卡片
         col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+        opt_results = st.session_state["optimization_results"]
         with col_r1:
-            st.metric("总距离", f"{results['total_distance_km']:.2f} km")
+            st.metric("总距离", f"{opt_results['total_distance_km']:.2f} km")
         with col_r2:
-            st.metric("总碳排放", f"{results['total_emission']:.2f} kg CO₂")
+            st.metric("总碳排放", f"{opt_results['total_emission']:.2f} kg CO₂")
         with col_r3:
-            st.metric("使用车辆", f"{results['num_vehicles_used']} 辆")
+            st.metric("使用车辆", f"{opt_results['num_vehicles_used']} 辆")
         with col_r4:
-            st.metric("减排比例", f"{results['reduction_percent']:.1f}%")
+            st.metric("减排比例", f"{opt_results['reduction_percent']:.1f}%")
 
         # ===== 导出功能 =====
         st.markdown("---")
@@ -485,10 +502,10 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
         report_lines.append(f"  使用车辆: {len(routes)} 辆 ({vehicle_name})")
         report_lines.append("")
         report_lines.append("【优化结果】")
-        report_lines.append(f"  总行驶距离: {results['total_distance_km']:.2f} km")
-        report_lines.append(f"  总碳排放: {results['total_emission']:.2f} kg CO₂")
-        report_lines.append(f"  基线碳排放: {results['baseline_emission']:.2f} kg CO₂")
-        report_lines.append(f"  减排比例: {results['reduction_percent']:.1f}%")
+        report_lines.append(f"  总行驶距离: {opt_results['total_distance_km']:.2f} km")
+        report_lines.append(f"  总碳排放: {opt_results['total_emission']:.2f} kg CO₂")
+        report_lines.append(f"  基线碳排放: {opt_results['baseline_emission']:.2f} kg CO₂")
+        report_lines.append(f"  减排比例: {opt_results['reduction_percent']:.1f}%")
         report_lines.append("")
         report_lines.append("【车辆调度详情】")
         for rr in route_results:
@@ -520,7 +537,18 @@ if res:
     st.markdown("---")
     st.markdown("### 📊 优化结果")
 
-    tab_map, tab_table, tab_carbon = st.tabs(["🗺️ 路线地图", "📋 车辆调度表", "📊 碳排放对比"])
+    route_results_list = results.get("route_results", [])
+    nodes = results.get("nodes", [])
+    depot_results_list = results.get("depot_results", [])
+
+    # ===== 一、中转仓选址结果表格（展示在最前面）=====
+    if depot_results_list and len(depot_results_list) > 0:
+        st.subheader("🏭 中转仓选址结果")
+        st.dataframe(pd.DataFrame(depot_results_list), use_container_width=True, hide_index=True)
+        st.markdown("")
+
+    # ===== 结果Tabs =====
+    tab_map, tab_table, tab_carbon = st.tabs(["🗺️ 路线地图", "🚛 车辆调度详情", "📊 碳排放对比"])
 
     # ===== Tab: 路线地图 =====
     with tab_map:
@@ -540,10 +568,21 @@ if res:
             warehouse_node = nodes[0]
             folium.Marker(
                 [warehouse_node["lat"], warehouse_node["lng"]],
-                popup=f"<b>总仓库</b><br>{warehouse_node['name']}",
+                popup=f"<b>🏭 总仓库</b><br>{warehouse_node['name']}<br>{warehouse.get('address', '')}",
                 tooltip="总仓库",
-                icon=folium.Icon(color="red", icon="star")
+                icon=folium.Icon(color="darkred", icon="star")
             ).add_to(m)
+
+            # 标记中转仓（红色方块）
+            depot_results_map = results.get("depot_results", [])
+            for depot in depot_results_map:
+                popup_html = f"<b>🏭 {depot.get('中转仓编号', depot.get('编号', ''))}</b><br>建议地址：{depot.get('建议地址', '未知')}<br>坐标：({depot.get('经度', 0)}, {depot.get('纬度', 0)})<br>服务场馆数：{depot.get('服务场馆数', 0)}个"
+                folium.Marker(
+                    [depot.get("纬度", 0), depot.get("经度", 0)],
+                    popup=folium.Popup(popup_html, max_width=300),
+                    tooltip=depot.get("中转仓编号", depot.get("编号", "")),
+                    icon=folium.Icon(color="red", icon="home", prefix="fa")
+                ).add_to(m)
 
             # 标记场馆
             for node in nodes[1:]:
@@ -590,7 +629,11 @@ if res:
 
         # 添加图例
         legend_html = '<div style="position:fixed;bottom:50px;left:50px;z-index:1000;background:white;padding:10px;border-radius:5px;border:1px solid gray;font-size:11pt;">'
-        legend_html += '<b>🚛 车辆路线</b><br>'
+        legend_html += '<b>📍 图例</b><br>'
+        legend_html += '<i style="background:darkred;width:12px;height:12px;display:inline-block;margin-right:5px;">⭐</i> 总仓库<br>'
+        if depot_results_map:
+            legend_html += '<i style="background:red;width:12px;height:12px;display:inline-block;margin-right:5px;">■</i> 中转仓<br>'
+        legend_html += '<i style="background:blue;width:12px;height:12px;display:inline-block;margin-right:5px;">●</i> 场馆<br>'
         for i, rr in enumerate(route_results_list):
             color = colors[i % len(colors)]
             legend_html += f'<i style="background:{color};width:12px;height:12px;display:inline-block;margin-right:5px;"></i>{rr["vehicle_name"]}<br>'
@@ -599,31 +642,70 @@ if res:
 
         st_folium(m, width=800, height=500)
 
-    # ===== Tab: 车辆调度表 =====
+    # ===== Tab: 车辆调度详情 =====
     with tab_table:
-        st.subheader("📋 车辆调度详情")
+        st.subheader("🚛 车辆调度详情")
 
-        for i, route_result in enumerate(route_results_list):
-            with st.expander(f"🚛 {route_result['vehicle_name']}（{route_result['vehicle_type']}）"):
-                # 路线
-                route_str = "总仓库 → " + " → ".join(route_result["visits"]) + " → 总仓库"
-                st.write(f"**路线：** {route_str}")
+        for route_result in route_results_list:
+            vehicle_label = f"{route_result['vehicle_name']}（{route_result['vehicle_type']}）"
 
-                # 装载明细表格
-                if route_result.get("load_details"):
-                    df_load = pd.DataFrame(route_result["load_details"])
-                    st.dataframe(df_load, hide_index=True, use_container_width=True)
+            with st.expander(f"🚛 {vehicle_label}", expanded=False):
+                # 路线信息
+                route_str = " → ".join(["总仓库"] + route_result["visits"] + ["总仓库"])
+                st.markdown(f"**路线：** {route_str}")
+                st.divider()
 
-                # 统计
-                col_v1, col_v2, col_v3 = st.columns(3)
-                with col_v1:
-                    cap = results.get("vehicle_capacity_kg", 15000)
-                    load_pct = (route_result["total_load_kg"] / cap * 100) if cap > 0 else 0
-                    st.metric("总装载量", f"{route_result['total_load_kg']:.0f} kg", delta=f"利用率 {load_pct:.0f}%")
-                with col_v2:
-                    st.metric("行驶距离", f"{route_result['total_distance_km']:.2f} km")
-                with col_v3:
-                    st.metric("碳排放", f"{route_result['total_carbon_kg']:.2f} kg CO₂")
+                # 构建物资明细表格（6列）
+                load_details = route_result.get("load_details", [])
+                if load_details:
+                    table_rows = []
+                    for stop in load_details:
+                        row = {
+                            "场馆": stop.get("venue", ""),
+                            "通用赛事物资(kg)": stop.get("general_materials_kg", 0),
+                            "专项运动器材(kg)": stop.get("sports_equipment_kg", 0),
+                            "医疗物资(kg)": stop.get("medical_materials_kg", 0),
+                            "IT设备(kg)": stop.get("it_equipment_kg", 0),
+                        }
+                        row["总需求量(kg)"] = (
+                            row["通用赛事物资(kg)"]
+                            + row["专项运动器材(kg)"]
+                            + row["医疗物资(kg)"]
+                            + row["IT设备(kg)"]
+                        )
+                        table_rows.append(row)
+
+                    detail_df = pd.DataFrame(table_rows)
+
+                    # 添加合计行
+                    if len(detail_df) > 0:
+                        total_row = {
+                            "场馆": "**合计**",
+                            "通用赛事物资(kg)": detail_df["通用赛事物资(kg)"].sum(),
+                            "专项运动器材(kg)": detail_df["专项运动器材(kg)"].sum(),
+                            "医疗物资(kg)": detail_df["医疗物资(kg)"].sum(),
+                            "IT设备(kg)": detail_df["IT设备(kg)"].sum(),
+                            "总需求量(kg)": detail_df["总需求量(kg)"].sum(),
+                        }
+                        detail_df = pd.concat([detail_df, pd.DataFrame([total_row])], ignore_index=True)
+
+                    st.dataframe(detail_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("无装载明细数据")
+
+                st.divider()
+
+                # 汇总指标
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    max_load = results.get("vehicle_capacity_kg", 15000)
+                    total_load = route_result.get("total_load_kg", 0)
+                    utilization = (total_load / max_load * 100) if max_load > 0 else 0
+                    st.metric("总装载量", f"{total_load:.0f} kg", delta=f"利用率 {utilization:.0f}%")
+                with col2:
+                    st.metric("总行驶距离", f"{route_result.get('total_distance_km', 0):.2f} km")
+                with col3:
+                    st.metric("碳排放", f"{route_result.get('total_carbon_kg', 0):.2f} kg CO₂")
 
         # 汇总表格
         st.markdown("---")
