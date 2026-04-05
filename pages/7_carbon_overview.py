@@ -2,48 +2,32 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
+import json
 
 st.set_page_config(page_title="碳排放概览", page_icon="📊")
 
-st.title("📊 Step 6：碳排放概览")
+st.title("📊 Step 7：碳排放概览")
 st.markdown("赛事物流碳足迹实时监控")
 
 # ===================== 检查优化结果 =====================
-optimization_result = st.session_state.get("optimization_result")
-vrp_result = st.session_state.get("vrp_result")
+result = st.session_state.get("optimization_results") or st.session_state.get("results")
+
 vehicles = st.session_state.get("vehicles", [])
 demands = st.session_state.get("demands", {})
 
-# 优先使用optimization_result，其次vrp_result
-result = optimization_result or vrp_result
-
 # ===================== 关键指标展示 =====================
-if result and isinstance(result, dict) and result.get("success") or (result and result.get("routes")):
-    # 总碳排放
-    total_carbon_kg = result.get("total_carbon_kg", 0)
-
-    # 基线碳排放（假设使用柴油重卡）
-    baseline_ef = 0.060  # kg CO₂/吨·km
-    total_demand_ton = sum(demands.values()) / 1000 if demands else 1
-    total_distance_km = result.get("total_distance_km", 100)
-    baseline_carbon_kg = total_demand_ton * total_distance_km * baseline_ef
-
-    # 减排百分比
-    if baseline_carbon_kg > 0:
-        reduction_pct = (baseline_carbon_kg - total_carbon_kg) / baseline_carbon_kg * 100
-    else:
-        reduction_pct = 0
-
-    # 种树数量（每棵树年吸收21.7千克二氧化碳）
-    tree_equivalent = total_carbon_kg / 21.7
+if result and isinstance(result, dict) and result.get("route_results"):
+    total_carbon_kg = result.get("total_emission", 0)
+    baseline_carbon_kg = result.get("baseline_emission", 0)
+    reduction_pct = result.get("reduction_percent", 0)
+    tree_equivalent = (baseline_carbon_kg - total_carbon_kg) / 21.7 if total_carbon_kg > 0 else 0
 
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric(
             "总碳排放量",
             f"{total_carbon_kg:,.1f} kg CO₂",
-            delta=f"-{(100 - reduction_pct):.1f}%" if reduction_pct > 0 else None
+            delta=f"-{reduction_pct:.1f}%" if reduction_pct > 0 else None
         )
     with col2:
         st.metric(
@@ -66,15 +50,15 @@ if result and isinstance(result, dict) and result.get("success") or (result and 
     col_pie1, col_pie2 = st.columns(2)
 
     with col_pie1:
-        # 干线运输 vs 终端配送构成
-        if result.get("route_details"):
-            # 按路线分类
+        # 按路线分类
+        route_results = result.get("route_results", [])
+        if route_results:
             route_carbon = []
-            for i, detail in enumerate(result.get("route_details", [])):
+            for i, rr in enumerate(route_results):
                 route_carbon.append({
-                    "路线": f"车辆 {i+1}",
-                    "碳排放_kg": detail.get("total_carbon_kg", 0),
-                    "距离_km": detail.get("total_distance_km", 0)
+                    "路线": rr.get("vehicle_name", f"车辆 {i+1}"),
+                    "碳排放_kg": rr.get("total_carbon_kg", 0),
+                    "距离_km": rr.get("total_distance_km", 0)
                 })
 
             df_routes = pd.DataFrame(route_carbon)
@@ -122,51 +106,46 @@ if result and isinstance(result, dict) and result.get("success") or (result and 
         )
         st.plotly_chart(fig_pie2, width="stretch")
 
-    # ===================== 碳排放趋势（使用模拟数据） =====================
-    st.subheader("📈 碳排放趋势")
+    # ===================== 各车辆碳排放对比 =====================
+    st.subheader("📊 各车辆碳排放对比")
 
-    if result.get("route_details"):
-        route_details = result.get("route_details", [])
-
-        trend_data = []
-        for i, detail in enumerate(route_details):
-            route = detail.get("route", [])
-            for seg in detail.get("segments", []):
-                trend_data.append({
-                    "路段": f"{seg.get('from', 0)}→{seg.get('to', 0)}",
-                    "碳排放_kg": seg.get("carbon_kg", 0),
-                    "距离_km": seg.get("distance_km", 0),
-                    "载重_t": seg.get("load_before_ton", 0)
-                })
-
-        df_trend = pd.DataFrame(trend_data)
+    if route_results:
+        df_vehicle_carbon = pd.DataFrame([{
+            "车辆": rr.get("vehicle_name", f"车辆 {i}"),
+            "碳排放(kg CO₂)": rr.get("total_carbon_kg", 0),
+            "行驶距离(km)": rr.get("total_distance_km", 0),
+            "装载量(kg)": rr.get("total_load_kg", 0)
+        } for i, rr in enumerate(route_results)])
 
         fig_bar = px.bar(
-            df_trend,
-            x="路段",
-            y="碳排放_kg",
-            color="载重_t",
-            title="各路段碳排放分布",
+            df_vehicle_carbon,
+            x="车辆",
+            y="碳排放(kg CO₂)",
+            color="车辆",
+            title="各车辆碳排放量对比",
             text_auto=True
         )
+        fig_bar.update_layout(showlegend=False)
         st.plotly_chart(fig_bar, width="stretch")
 
     # ===================== 详细数据表 =====================
     st.subheader("📋 路线详情")
 
-    if result.get("route_details"):
+    if route_results:
         detail_table = []
-        for i, detail in enumerate(result.get("route_details", [])):
+        for i, rr in enumerate(route_results):
             detail_table.append({
-                "车辆编号": f"车辆 {i+1}",
+                "车辆编号": rr.get("vehicle_name", f"车辆 {i+1}"),
                 "车型": vehicle_name_map.get(result.get("vehicle_type", ""), result.get("vehicle_type", "")),
-                "行驶距离_km": f"{detail.get('total_distance_km', 0):.2f}",
-                "碳排放_kg": f"{detail.get('total_carbon_kg', 0):.2f}",
-                "站点数": len(detail.get("route", [])) - 2
+                "行驶距离_km": f"{rr.get('total_distance_km', 0):.2f}",
+                "碳排放_kg": f"{rr.get('total_carbon_kg', 0):.2f}",
+                "装载量_kg": f"{rr.get('total_load_kg', 0):.0f}",
+                "访问场馆数": len(rr.get("visits", []))
             })
 
         df_detail = pd.DataFrame(detail_table)
         st.dataframe(df_detail, hide_index=True, width="stretch")
+
 else:
     # ===================== 无数据提示 =====================
     st.warning("⚠️ 暂无优化计算结果")
@@ -183,8 +162,8 @@ else:
         """)
     with col_info2:
         st.info("""
-        **或在「优化结果」页面**
-        点击「🚀 开始优化」按钮
+        **或在「路径优化」页面**
+        点击「🚀 开始优化计算」按钮
         运行完整的物流网络优化流程
         """)
 
@@ -193,28 +172,33 @@ else:
     # 即使没有优化结果，也显示车型库概览
     st.subheader("📊 车型碳排放参考")
 
-    # 从车型库加载数据
     import json
     try:
         with open("data/vehicle_types.json", "r", encoding="utf-8") as f:
             data = json.load(f)
-            vehicle_list = data.get("vehicle_types", []) if isinstance(data, dict) else data
+            if isinstance(data, dict) and "vehicle_types" in data:
+                vehicle_types = data["vehicle_types"]
+            else:
+                vehicle_types = data
     except:
-        vehicle_list = []
+        try:
+            with open("green-logistics-platform/data/vehicle_types.json", "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict) and "vehicle_types" in data:
+                    vehicle_types = data["vehicle_types"]
+                else:
+                    vehicle_types = data
+        except:
+            vehicle_types = []
 
-    if vehicle_list:
-        ref_data = []
-        for v in vehicle_list:
-            ref_data.append({
-                "车型": v.get("name", ""),
-                "排放因子": f"{v.get('emission_factor_default', 0):.3f}",
-                "减排对比": v.get("reduction_vs_diesel", "N/A")
+    if vehicle_types:
+        table_data = []
+        for v in vehicle_types:
+            table_data.append({
+                "车型名称": v.get("name", ""),
+                "能源类型": v.get("fuel_type", ""),
+                "碳排放因子": v.get("emission_factor_default", 0),
+                "单位": v.get("emission_factor_unit", "kg CO₂/吨·km")
             })
-
-        df_ref = pd.DataFrame(ref_data)
+        df_ref = pd.DataFrame(table_data)
         st.dataframe(df_ref, hide_index=True, width="stretch")
-
-        st.caption("💡 参考：排放因子单位为 kg CO₂/吨·km，越低越环保")
-
-st.markdown("---")
-st.caption("💡 提示：种树计算基于每棵树每年吸收约21.7千克二氧化碳")

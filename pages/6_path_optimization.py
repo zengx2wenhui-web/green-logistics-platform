@@ -8,7 +8,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="路径优化", page_icon="🗺️")
 
-st.title("🗺️ Step 7：路径优化")
+st.title("🗺️ Step 6：路径优化")
 st.markdown("执行物流网络优化计算")
 
 # ===================== 工具函数 =====================
