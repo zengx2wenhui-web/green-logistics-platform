@@ -11,24 +11,25 @@ st.set_page_config(
     page_title="赛事碳足迹优化平台",
     page_icon="🌿",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
+    menu_items={
+        "About": """
+        ## 赛事碳足迹优化平台 v1.0
+
+        基于AI的物流碳排放优化系统，为大型赛事提供绿色物流解决方案。
+
+        **核心功能：**
+        - 碳排放实时监控与预测
+        - VRP路径优化（最小化碳排放）
+        - 加权K-Means中转仓选址
+        - 新能源车队配置优化
+
+        **技术栈：** Streamlit + Folium + OR-Tools + Scikit-learn
+        """,
+        "Get Help": "https://github.com/your-repo/green-logistics-platform",
+        "Report a Bug": "https://github.com/your-repo/green-logistics-platform/issues"
+    }
 )
-
-# ===================== 定义页面导航 =====================
-pages = {
-    "首页": st.Page("app.py", title="🏠 首页", default=True),
-    "Step 1 - 仓库设置": st.Page("pages/1_warehouse.py", title="📍 Step 1: 仓库设置"),
-    "Step 2 - 场馆录入": st.Page("pages/2_venues.py", title="🏟️ Step 2: 场馆录入"),
-    "Step 3 - 物资需求": st.Page("pages/3_materials.py", title="📦 Step 3: 物资需求"),
-    "Step 4 - 车辆配置": st.Page("pages/4_vehicles.py", title="🚛 Step 4: 车辆配置"),
-    "Step 5 - 路径优化": st.Page("pages/5_path_optimization.py", title="🗺️ Step 5: 路径优化"),
-    "Step 6 - 碳排放概览": st.Page("pages/6_carbon_overview.py", title="📊 Step 6: 碳排放概览"),
-    "Step 7 - 碳排放分析": st.Page("pages/7_carbon_analysis.py", title="🔬 Step 7: 碳排放分析"),
-    "Step 8 - 优化结果": st.Page("pages/8_results.py", title="📋 Step 8: 优化结果"),
-}
-
-pg = st.navigation(pages)
-pg.run()
 
 
 # ===================== 立即初始化 Session State =====================
@@ -224,7 +225,28 @@ def main():
             help="车辆最大载重"
         )
 
+        st.divider()
+
+        # 导航链接
+        st.markdown("### 📱 页面导航 (8步流程)")
+
+        pages = [
+            ("🏠 首页", "app.py"),
+            ("📍 Step 1: 仓库设置", "pages/1_warehouse.py"),
+            ("🏟️ Step 2: 场馆录入", "pages/2_venues.py"),
+            ("📦 Step 3: 物资需求", "pages/3_materials.py"),
+            ("🚛 Step 4: 车辆配置", "pages/4_vehicles.py"),
+            ("🔬 Step 5: 碳排放分析", "pages/5_carbon_analysis.py"),
+            ("📊 Step 6: 碳排放概览", "pages/6_carbon_overview.py"),
+            ("🗺️ Step 7: 路径优化", "pages/7_path_optimization.py"),
+            ("📋 Step 8: 优化结果", "pages/8_results.py"),
+        ]
+
+        for page_name, page_path in pages:
+            st.markdown(f"[{page_name}]({page_path})")
+
     # ===== 主内容区 =====
+    col_title, col_breadcrumb = st.columns([3, 1])
 
     with col_title:
         st.title("🌿 大型赛事绿色物流碳足迹优化平台")
