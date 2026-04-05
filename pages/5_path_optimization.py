@@ -208,6 +208,7 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
         progress_bar.progress(0.45)
 
         venue_nodes_list = [n for n in nodes if not n.get("is_warehouse", False)]
+        depot_results = []  # 初始化，避免后续引用错误
 
         if len(venue_nodes_list) <= 5:
             optimal_k = 1
