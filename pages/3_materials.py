@@ -10,31 +10,20 @@ st.title("📦 物资需求录入")
 st.markdown("为各场馆录入物资配送需求，数据将用于VRP路径优化")
 
 # ===== 初始化 session_state =====
-if "material_demands" not in st.session_state:
-    st.session_state.material_demands = {}
+if "demands_df" not in st.session_state:
+    st.session_state["demands_df"] = None
 
 if "demands" not in st.session_state:
-    st.session_state.demands = {}
+    st.session_state["demands"] = {}
 
 # ===== 预置4种物资类别 =====
 MATERIAL_CATEGORIES = {
-    "通用赛事物资": ["餐饮原料", "清洁用品", "床上用品", "日常生活用品", "办公用品", "包装材料"],
-    "专项运动器材": ["比赛器材", "训练器材", "音响设备", "照明设备", "空调设备", "安保器材"],
-    "医疗物资": ["医疗设备", "药品耗材", "急救物资", "防护用品", "消毒液", "口罩"],
-    "IT设备": ["转播设备", "摄影器材", "通信设备", "监控设备", "办公设备", "网络设备"]
+    "通用赛事物资": 0,
+    "专项运动器材": 0,
+    "医疗物资": 0,
+    "IT设备": 0
 }
-
-
-def sync_demands_from_material_demands():
-    """从material_demands计算每个场馆的总需求并同步到demands（供VRP使用）"""
-    st.session_state.demands = {}
-    for venue, categories in st.session_state.material_demands.items():
-        total_weight = 0
-        for materials in categories.values():
-            for mat_info in materials.values():
-                total_weight += mat_info.get("weight_kg", 0)
-        st.session_state.demands[venue] = total_weight
-
+WEIGHT_COLS = ["通用赛事物资(kg)", "专项运动器材(kg)", "医疗物资(kg)", "IT设备(kg)"]
 
 # ===== 检查场馆数据 =====
 venue_names = []
@@ -43,21 +32,140 @@ if "venues" in st.session_state and st.session_state.venues:
 
 if not venue_names:
     st.warning("⚠️ 请先在【场馆录入】页面添加场馆后再录入物资需求")
-    st.info("**物资需求文件格式：** 场馆名称、物资类别、物资名称、重量_kg（可选：体积_m3、紧急程度）")
+    st.info("**物资需求文件格式：** 场馆名称、各类别物资重量")
     st.stop()
 
 # ===== 主标签页 =====
-tab1, tab2, tab3 = st.tabs(["📁 文件批量导入", "✏️ 快速录入", "📊 汇总查看"])
+tab1, tab2 = st.tabs(["✏️ 在线填写", "📁 上传文件"])
 
-# ========== Tab1: 文件批量导入 ==========
+# ========== Tab1: 在线填写 ==========
 with tab1:
-    st.subheader("文件批量导入物资需求")
+    st.subheader("在线填写物资需求")
+
+    # 构建初始数据
+    default_data = {
+        "场馆名称": venue_names,
+        "通用赛事物资(kg)": [0] * len(venue_names),
+        "专项运动器材(kg)": [0] * len(venue_names),
+        "医疗物资(kg)": [0] * len(venue_names),
+        "IT设备(kg)": [0] * len(venue_names),
+    }
+
+    # 如果已有物资数据，用已有数据填充
+    if st.session_state.get("demands_df") is not None:
+        df = st.session_state["demands_df"].copy()
+        # 确保列一致，补充缺失的场馆
+        existing_venues = set(df["场馆名称"].tolist())
+        for vn in venue_names:
+            if vn not in existing_venues:
+                new_row = {"场馆名称": vn}
+                for col in WEIGHT_COLS:
+                    new_row[col] = 0
+                df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+        # 只保留当前场馆
+        df = df[df["场馆名称"].isin(venue_names)]
+    else:
+        df = pd.DataFrame(default_data)
+
+    # 如果有 material_demands 历史数据，恢复它
+    if "material_demands" in st.session_state and st.session_state.material_demands:
+        for venue, categories in st.session_state.material_demands.items():
+            if venue in venue_names:
+                mask = df["场馆名称"] == venue
+                for cat, materials in categories.items():
+                    col_map = {
+                        "通用赛事物资": "通用赛事物资(kg)",
+                        "专项运动器材": "专项运动器材(kg)",
+                        "医疗物资": "医疗物资(kg)",
+                        "IT设备": "IT设备(kg)"
+                    }
+                    col_name = col_map.get(cat, None)
+                    if col_name and col_name in df.columns:
+                        total = sum(m.get("weight_kg", 0) for m in materials.values())
+                        df.loc[mask, col_name] = total
+
+    # 显示可编辑表格
+    edited_df = st.data_editor(
+        df,
+        disabled=["场馆名称"],
+        num_rows="fixed",
+        use_container_width=True,
+        column_config={
+            "通用赛事物资(kg)": st.column_config.NumberColumn(min_value=0, step=10, default=0),
+            "专项运动器材(kg)": st.column_config.NumberColumn(min_value=0, step=10, default=0),
+            "医疗物资(kg)": st.column_config.NumberColumn(min_value=0, step=10, default=0),
+            "IT设备(kg)": st.column_config.NumberColumn(min_value=0, step=10, default=0),
+        }
+    )
+
+    # 计算每行总计
+    edited_df["总需求(kg)"] = edited_df[WEIGHT_COLS].sum(axis=1)
+
+    # 显示每列合计
+    st.markdown("---")
+    st.subheader("📊 各列合计")
+    col_sum1, col_sum2, col_sum3, col_sum4, col_sum5 = st.columns(5)
+    with col_sum1:
+        st.metric("通用赛事物资", f"{edited_df['通用赛事物资(kg)'].sum():,.0f} kg")
+    with col_sum2:
+        st.metric("专项运动器材", f"{edited_df['专项运动器材(kg)'].sum():,.0f} kg")
+    with col_sum3:
+        st.metric("医疗物资", f"{edited_df['医疗物资(kg)'].sum():,.0f} kg")
+    with col_sum4:
+        st.metric("IT设备", f"{edited_df['IT设备(kg)'].sum():,.0f} kg")
+    with col_sum5:
+        st.metric("总计", f"{edited_df['总需求(kg)'].sum():,.0f} kg")
+
+    st.markdown("---")
+
+    # 保存按钮
+    if st.button("💾 保存物资需求", type="primary", use_container_width=True):
+        # 保存完整的 DataFrame
+        st.session_state["demands_df"] = edited_df.copy()
+
+        # 同时保存为 dict 格式，方便路径优化页面读取
+        demands = {}
+        for _, row in edited_df.iterrows():
+            venue = row["场馆名称"]
+            total = row["总需求(kg)"]
+            demands[venue] = total
+
+        st.session_state["demands"] = demands
+
+        # 同步到 material_demands（供其他页面使用）
+        st.session_state.material_demands = {}
+        for _, row in edited_df.iterrows():
+            venue = row["场馆名称"]
+            for col in WEIGHT_COLS:
+                cat_name = col.replace("(kg)", "")
+                weight = row[col]
+                if weight > 0:
+                    if venue not in st.session_state.material_demands:
+                        st.session_state.material_demands[venue] = {}
+                    if cat_name not in st.session_state.material_demands[venue]:
+                        st.session_state.material_demands[venue][cat_name] = {}
+                    st.session_state.material_demands[venue][cat_name]["总计"] = {
+                        "weight_kg": weight,
+                        "volume_m3": 0,
+                        "urgency": "中"
+                    }
+
+        st.success(f"✅ 已保存 {len(demands)} 个场馆的物资需求，总物资量 {edited_df['总需求(kg)'].sum():,.0f} kg")
+
+    # 预览编辑后的表格
+    with st.expander("📋 预览完整数据"):
+        st.dataframe(edited_df, hide_index=True, use_container_width=True)
+
+
+# ========== Tab2: 上传文件 ==========
+with tab2:
+    st.subheader("上传文件导入物资需求")
 
     st.info("""
     **支持格式：** CSV、Excel(.xlsx/.xls)、TXT、JSON
     **编码：** 自动识别（UTF-8/GBK/GB2312）
     """)
-    st.caption("必需列：场馆名称、物资类别、物资名称、重量_kg | 可选：体积_m3、紧急程度")
+    st.caption("必需列：场馆名称 + 各物资类别重量（通用赛事物资、专项运动器材、医疗物资、IT设备）")
 
     uploaded_file = st.file_uploader(
         "上传物资需求文件",
@@ -66,86 +174,99 @@ with tab1:
     )
 
     if uploaded_file:
-        df, error = read_uploaded_file(uploaded_file)
+        df_upload, error = read_uploaded_file(uploaded_file)
         if error:
             st.error(f"❌ {error}")
-        elif df is not None and len(df) > 0:
-            st.success(f"✅ 成功读取 {len(df)} 条数据")
-            st.dataframe(df, width="stretch")
-            st.info(f"共读取 {len(df)} 条物资需求记录")
+        elif df_upload is not None and len(df_upload) > 0:
+            st.success(f"✅ 成功读取 {len(df_upload)} 条数据")
+            st.dataframe(df_upload, use_container_width=True)
+            st.info(f"共读取 {len(df_upload)} 条记录")
 
             # 智能匹配列名
-            columns = df.columns.tolist()
+            columns = df_upload.columns.tolist()
             venue_col = None
-            category_col = None
-            material_col = None
-            weight_col = None
-            volume_col = None
-            urgency_col = None
+            weight_cols_map = {
+                "通用赛事物资(kg)": None,
+                "专项运动器材(kg)": None,
+                "医疗物资(kg)": None,
+                "IT设备(kg)": None
+            }
 
             for col in columns:
                 col_lower = str(col).lower()
-                if '场馆' in str(col) or 'venue' in col_lower:
+                col_str = str(col).strip()
+                if '场馆' in col_str or '名称' in col_str or 'venue' in col_lower or 'name' in col_lower:
                     venue_col = col
-                if '类别' in str(col) or 'category' in col_lower or '分类' in str(col):
-                    category_col = col
-                if '物资' in str(col) or 'material' in col_lower or '物品' in str(col):
-                    material_col = col
-                if '重量' in str(col) or 'weight' in col_lower:
-                    weight_col = col
-                if '体积' in str(col) or 'volume' in col_lower:
-                    volume_col = col
-                if '紧急' in str(col) or 'urgency' in col_lower or 'priority' in col_lower:
-                    urgency_col = col
+                for cat_key in weight_cols_map.keys():
+                    cat_lower = cat_key.lower().replace("(kg)", "").strip()
+                    if cat_lower in col_lower or cat_key.replace("(kg)", "") in col_str:
+                        weight_cols_map[cat_key] = col
 
-            # 必需列智能匹配
-            if venue_col is None or category_col is None or material_col is None or weight_col is None:
-                st.warning("未能自动识别所有必需列，请手动选择：")
-                venue_col = st.selectbox("选择【场馆名称】列", columns, index=columns.index(venue_col) if venue_col in columns else 0)
-                category_col = st.selectbox("选择【物资类别】列", columns, index=columns.index(category_col) if category_col in columns else 1)
-                material_col = st.selectbox("选择【物资名称】列", columns, index=columns.index(material_col) if material_col in columns else 2)
-                weight_col = st.selectbox("选择【重量_kg】列", columns, index=columns.index(weight_col) if weight_col in columns else 3)
-                volume_col = st.selectbox("选择【体积_m3】列（可选）", [None] + columns)
-                urgency_col = st.selectbox("选择【紧急程度】列（可选）", [None] + columns)
-            else:
-                st.info(f"已识别：场馆=`{venue_col}`, 类别=`{category_col}`, 物资=`{material_col}`, 重量=`{weight_col}`")
-                with st.expander("🔧 手动调整列映射"):
-                    venue_col = st.selectbox("场馆名称列", columns, index=columns.index(venue_col))
-                    category_col = st.selectbox("物资类别列", columns, index=columns.index(category_col))
-                    material_col = st.selectbox("物资名称列", columns, index=columns.index(material_col))
-                    weight_col = st.selectbox("重量_kg列", columns, index=columns.index(weight_col))
-                    volume_col = st.selectbox("体积_m3列（可选）", [None] + columns, index=0)
-                    urgency_col = st.selectbox("紧急程度列（可选）", [None] + columns, index=0)
+            # 如果找不到场馆列，列出供选择
+            if venue_col is None:
+                st.warning("未能自动识别【场馆名称】列，请手动选择：")
+                venue_col = st.selectbox("选择【场馆名称】列", columns)
 
-            if st.button("🚀 导入物资需求", type="primary"):
-                imported_count = 0
-                for _, row in df.iterrows():
-                    venue = str(row.get(venue_col, ""))
-                    category = str(row.get(category_col, ""))
-                    material = str(row.get(material_col, ""))
-                    weight = float(row.get(weight_col, 0)) if pd.notna(row.get(weight_col)) else 0.0
-                    volume = float(row.get(volume_col, 0)) if volume_col and pd.notna(row.get(volume_col)) else 0.0
-                    urgency = str(row.get(urgency_col, "中")) if urgency_col and pd.notna(row.get(urgency_col)) else "中"
+            # 显示列映射状态
+            st.markdown("---")
+            st.markdown("**列映射状态：**")
+            cols_status = st.columns(5)
+            with cols_status[0]:
+                st.write(f"场馆名称: `{venue_col if venue_col else '❌ 未找到'}`")
+            for i, (cat, matched_col) in enumerate(weight_cols_map.items()):
+                with cols_status[i + 1]:
+                    status = "✅" if matched_col else "❌"
+                    st.write(f"{status} {cat}")
 
-                    if not venue or venue == 'nan':
-                        continue
+            # 让用户确认或修正列映射
+            with st.expander("🔧 手动调整列映射"):
+                venue_col = st.selectbox("场馆名称列", columns, index=columns.index(venue_col) if venue_col in columns else 0)
+                for cat in weight_cols_map.keys():
+                    current = weight_cols_map[cat]
+                    options = [None] + [c for c in columns if c != venue_col]
+                    idx = options.index(current) if current in options else 0
+                    weight_cols_map[cat] = st.selectbox(f"{cat}列", options, index=idx)
 
-                    if venue not in st.session_state.material_demands:
-                        st.session_state.material_demands[venue] = {}
+            if st.button("🚀 确认并合并到数据表", type="primary"):
+                # 构建上传数据的 DataFrame
+                upload_data = {"场馆名称": df_upload[venue_col].astype(str)}
 
-                    if category not in st.session_state.material_demands[venue]:
-                        st.session_state.material_demands[venue][category] = {}
+                for cat, col in weight_cols_map.items():
+                    if col:
+                        upload_data[cat] = pd.to_numeric(df_upload[col], errors="coerce").fillna(0)
+                    else:
+                        upload_data[cat] = 0
 
-                    st.session_state.material_demands[venue][category][material] = {
-                        "weight_kg": weight,
-                        "volume_m3": volume,
-                        "urgency": urgency
-                    }
-                    imported_count += 1
+                df_upload_mapped = pd.DataFrame(upload_data)
 
-                # 循环结束后统一同步 demands（只调用一次）
-                sync_demands_from_material_demands()
-                st.success(f"✅ 成功导入 {imported_count} 条物资需求记录！")
+                # 合并到主数据表
+                if st.session_state.get("demands_df") is not None:
+                    df_main = st.session_state["demands_df"].copy()
+                    # 用上传数据更新已有数据
+                    for _, row in df_upload_mapped.iterrows():
+                        venue = row["场馆名称"]
+                        mask = df_main["场馆名称"] == venue
+                        if mask.any():
+                            for cat in WEIGHT_COLS:
+                                df_main.loc[mask, cat] = row[cat]
+                        else:
+                            df_main = pd.concat([df_main, row.to_frame().T], ignore_index=True)
+                    st.session_state["demands_df"] = df_main
+                else:
+                    # 补充缺失列
+                    for col in WEIGHT_COLS:
+                        if col not in df_upload_mapped.columns:
+                            df_upload_mapped[col] = 0
+                    st.session_state["demands_df"] = df_upload_mapped
+
+                # 同步 demands
+                demands = {}
+                df_save = st.session_state["demands_df"]
+                for _, row in df_save.iterrows():
+                    demands[row["场馆名称"]] = sum(row[c] for c in WEIGHT_COLS)
+                st.session_state["demands"] = demands
+
+                st.success(f"✅ 已合并 {len(df_upload_mapped)} 条记录到物资需求表！")
                 st.rerun()
 
     # 模板下载
@@ -153,11 +274,10 @@ with tab1:
     st.subheader("📥 下载导入模板")
     template_data = {
         "场馆名称": ["主体育场", "游泳中心", "运动员村"],
-        "物资类别": ["专项运动器材", "通用赛事物资", "专项运动器材"],
-        "物资名称": ["比赛器材A", "餐饮原料", "训练器材"],
-        "重量_kg": [500, 1000, 300],
-        "体积_m3": [2.0, 5.0, 1.5],
-        "紧急程度": ["高", "中", "低"]
+        "通用赛事物资(kg)": [500, 1000, 300],
+        "专项运动器材(kg)": [300, 500, 200],
+        "医疗物资(kg)": [100, 200, 150],
+        "IT设备(kg)": [200, 300, 100],
     }
     df_template = pd.DataFrame(template_data)
     csv_template = df_template.to_csv(index=False)
@@ -169,262 +289,31 @@ with tab1:
     )
 
 
-# ========== Tab2: 快速录入 ==========
-with tab2:
-    st.subheader("快速录入物资需求")
-
-    # 选择场馆
-    selected_venue = st.selectbox("选择场馆 *", [""] + venue_names)
-
-    if selected_venue:
-        if selected_venue not in st.session_state.material_demands:
-            st.session_state.material_demands[selected_venue] = {}
-
-        # 选择物资类别
-        selected_category = st.selectbox(
-            "物资类别 *",
-            [""] + list(MATERIAL_CATEGORIES.keys())
-        )
-
-        if selected_category:
-            category_materials = MATERIAL_CATEGORIES[selected_category]
-
-            # 物资名称输入方式
-            col_m1, col_m2 = st.columns(2)
-            with col_m1:
-                material_input_mode = st.radio(
-                    "物资名称输入方式",
-                    ["从列表选择", "手动输入"],
-                    horizontal=True
-                )
-
-            if material_input_mode == "从列表选择":
-                selected_material = st.selectbox("物资名称 *", [""] + category_materials)
-            else:
-                selected_material = st.text_input("物资名称 *", placeholder="输入物资名称")
-
-            if selected_material:
-                col_w1, col_w2 = st.columns(2)
-                with col_w1:
-                    weight = st.number_input(
-                        "重量 (kg) *",
-                        min_value=0.0,
-                        value=0.0,
-                        step=10.0,
-                        format="%.1f"
-                    )
-                with col_w2:
-                    volume = st.number_input(
-                        "体积 (m³)",
-                        min_value=0.0,
-                        value=0.0,
-                        step=0.5,
-                        format="%.2f"
-                    )
-
-                urgency = st.selectbox("紧急程度", ["高", "中", "低"], index=1)
-
-                col_btn1, col_btn2 = st.columns(2)
-                with col_btn1:
-                    add_btn = st.button("➕ 添加物资", type="primary", use_container_width=True)
-                with col_btn2:
-                    clear_btn = st.button("🗑️ 清空此类", use_container_width=True)
-
-                if add_btn and selected_material and weight > 0:
-                    if selected_category not in st.session_state.material_demands[selected_venue]:
-                        st.session_state.material_demands[selected_venue][selected_category] = {}
-
-                    st.session_state.material_demands[selected_venue][selected_category][selected_material] = {
-                        "weight_kg": weight,
-                        "volume_m3": volume,
-                        "urgency": urgency
-                    }
-                    sync_demands_from_material_demands()
-                    st.success(f"已添加: {selected_material} ({weight} kg)")
-
-                if clear_btn:
-                    if selected_category in st.session_state.material_demands[selected_venue]:
-                        del st.session_state.material_demands[selected_venue][selected_category]
-                    sync_demands_from_material_demands()
-                    st.rerun()
-
-        # 显示当前场馆物资清单
-        st.markdown("---")
-        st.subheader(f"📋 {selected_venue} 当前物资清单")
-
-        venue_demands = st.session_state.material_demands.get(selected_venue, {})
-
-        if venue_demands:
-            display_data = []
-            for cat, materials in venue_demands.items():
-                for mat_name, mat_info in materials.items():
-                    display_data.append({
-                        "类别": cat,
-                        "物资名称": mat_name,
-                        "重量_kg": mat_info["weight_kg"],
-                        "体积_m3": mat_info.get("volume_m3", 0),
-                        "紧急度": mat_info.get("urgency", "中")
-                    })
-
-            if display_data:
-                df_display = pd.DataFrame(display_data)
-                st.dataframe(df_display, hide_index=True, width="stretch")
-
-                col_s1, col_s2, col_s3 = st.columns(3)
-                with col_s1:
-                    total_weight = df_display["重量_kg"].sum()
-                    st.metric("总重量", f"{total_weight:,.1f} kg")
-                with col_s2:
-                    total_volume = df_display["体积_m3"].sum()
-                    st.metric("总体积", f"{total_volume:,.2f} m³")
-                with col_s3:
-                    st.metric("物资项数", len(df_display))
-
-                # 删除物资
-                st.markdown("**🗑️ 删除物资项**")
-                material_options = [f"{row['类别']} - {row['物资名称']}" for _, row in df_display.iterrows()]
-                selected_to_delete = st.selectbox("选择要删除的物资", [""] + material_options)
-
-                if selected_to_delete and st.button("确认删除"):
-                    cat_name, mat_name = selected_to_delete.split(" - ", 1)
-                    if cat_name in st.session_state.material_demands[selected_venue]:
-                        if mat_name in st.session_state.material_demands[selected_venue][cat_name]:
-                            del st.session_state.material_demands[selected_venue][cat_name][mat_name]
-                            if not st.session_state.material_demands[selected_venue][cat_name]:
-                                del st.session_state.material_demands[selected_venue][cat_name]
-                    sync_demands_from_material_demands()
-                    st.rerun()
-        else:
-            st.info("该场馆暂无物资需求记录")
-
-
-# ========== Tab3: 汇总查看 ==========
-with tab3:
-    st.subheader("物资需求汇总")
-
-    if not venue_names:
-        st.info("请先录入场馆和物资需求")
-    else:
-        summary_data = []
-        total_all_weight = 0
-        total_all_volume = 0
-
-        for venue in venue_names:
-            venue_data = st.session_state.material_demands.get(venue, {})
-            venue_weight = 0
-            venue_volume = 0
-            venue_items = 0
-
-            for cat, materials in venue_data.items():
-                for mat_name, mat_info in materials.items():
-                    weight = mat_info["weight_kg"]
-                    volume = mat_info.get("volume_m3", 0)
-                    venue_weight += weight
-                    venue_volume += volume
-                    venue_items += 1
-
-                    summary_data.append({
-                        "场馆": venue,
-                        "类别": cat,
-                        "物资": mat_name,
-                        "重量_kg": weight,
-                        "体积_m3": volume,
-                        "紧急度": mat_info.get("urgency", "中")
-                    })
-
-            total_all_weight += venue_weight
-            total_all_volume += venue_volume
-
-        if summary_data:
-            df_summary = pd.DataFrame(summary_data)
-
-            # 概览指标
-            col_o1, col_o2, col_o3, col_o4 = st.columns(4)
-            with col_o1:
-                st.metric("场馆数", len(venue_names))
-            with col_o2:
-                st.metric("总物资项", len(df_summary))
-            with col_o3:
-                st.metric("总重量", f"{total_all_weight:,.1f} kg")
-            with col_o4:
-                st.metric("总体积", f"{total_all_volume:,.2f} m³")
-
-            st.markdown("---")
-
-            # 按场馆汇总
-            st.subheader("按场馆汇总")
-            venue_summary = df_summary.groupby("场馆").agg({
-                "重量_kg": "sum",
-                "体积_m3": "sum",
-                "物资": "count"
-            }).rename(columns={"物资": "物资项数"}).reset_index()
-
-            st.dataframe(venue_summary, hide_index=True, width="stretch")
-
-            # 可视化
-            col_v1, col_v2 = st.columns(2)
-            with col_v1:
-                fig_venue = px.bar(
-                    venue_summary,
-                    x="场馆",
-                    y="重量_kg",
-                    color="场馆",
-                    title="各场馆物资重量分布",
-                    text_auto=True
-                )
-                st.plotly_chart(fig_venue, width="stretch")
-
-            with col_v2:
-                category_summary = df_summary.groupby("类别")["重量_kg"].sum().reset_index()
-                fig_cat = px.pie(
-                    category_summary,
-                    values="重量_kg",
-                    names="类别",
-                    title="物资类别重量占比"
-                )
-                st.plotly_chart(fig_cat, width="stretch")
-
-            # 完整数据表
-            with st.expander("查看完整数据"):
-                st.dataframe(df_summary.sort_values(["场馆", "类别"]), hide_index=True, width="stretch")
-
-            # 导出
-            st.markdown("---")
-            col_exp1, col_exp2 = st.columns(2)
-            with col_exp1:
-                csv_export = df_summary.to_csv(index=False)
-                st.download_button(
-                    label="📥 导 出 CSV",
-                    data=csv_export,
-                    file_name="material_demands_summary.csv",
-                    mime="text/csv"
-                )
-            with col_exp2:
-                if st.button("🗑️ 清空所有物资数据"):
-                    st.session_state.material_demands = {}
-                    st.session_state.demands = {}
-                    st.success("已清空所有物资需求数据")
-                    st.rerun()
-        else:
-            st.info("暂无物资需求数据，请先录入")
-
+# ========== 底部需求摘要 ==========
 st.markdown("---")
-
-# ========== 页面底部：当前保存状态 ==========
 st.divider()
 st.subheader("📋 当前已保存的物资需求数据")
 
 if st.session_state.get("demands") and len(st.session_state["demands"]) > 0:
     demands = st.session_state["demands"]
-    st.success(f"✅ 已保存 {len(demands)} 个场馆的物资需求")
+    total_demand = sum(demands.values())
 
-    summary_data = [{"场馆": k, "总需求(kg)": v} for k, v in demands.items()]
-    st.dataframe(pd.DataFrame(summary_data), width="stretch")
-    st.metric("总物资需求", f"{sum(demands.values()):,.1f} kg")
+    col_m1, col_m2, col_m3 = st.columns(3)
+    with col_m1:
+        st.metric("场馆数", len(demands))
+    with col_m2:
+        st.metric("总物资需求量", f"{total_demand:,.0f} kg")
+    with col_m3:
+        avg_demand = total_demand / len(demands) if demands else 0
+        st.metric("场均需求", f"{avg_demand:,.0f} kg")
 
-    st.info("💡 此数据已同步，可供【路径优化】页面使用")
+    # 显示汇总表
+    summary_list = [{"场馆": k, "总需求(kg)": v} for k, v in demands.items()]
+    st.dataframe(pd.DataFrame(summary_list), hide_index=True, use_container_width=True)
+
+    st.success("✅ 数据已同步，可供【路径优化】页面使用")
 else:
-    st.warning("⚠️ 暂无物资需求数据。请通过上方上传文件或快速录入。")
+    st.warning("⚠️ 暂无物资需求数据，请通过上方在线填写或上传文件录入。")
 
 st.markdown("---")
 st.caption("💡 提示: 物资需求数据将用于VRP路径优化中的车辆调度计算")
