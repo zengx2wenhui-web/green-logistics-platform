@@ -4,58 +4,9 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 from utils.amap_api import geocode
+from utils.file_reader import read_uploaded_file
 
 st.set_page_config(page_title="场馆录入", page_icon="🏟️")
-
-
-def read_file_with_encoding(uploaded_file):
-    """根据文件类型读取数据，支持 CSV/Excel/TXT/JSON"""
-    file_name = uploaded_file.name.lower()
-
-    try:
-        if file_name.endswith('.csv'):
-            # CSV 文件 - 尝试多种编码
-            encodings = ['utf-8', 'gbk', 'gb2312', 'gb18030', 'latin1']
-            for encoding in encodings:
-                try:
-                    return pd.read_csv(uploaded_file, encoding=encoding)
-                except UnicodeDecodeError:
-                    continue
-            # 如果都失败
-            uploaded_file.seek(0)
-            return pd.read_csv(uploaded_file, encoding='utf-8', errors='replace')
-
-        elif file_name.endswith(('.xlsx', '.xls')):
-            # Excel 文件
-            return pd.read_excel(uploaded_file, engine='openpyxl')
-
-        elif file_name.endswith('.txt'):
-            # TXT 文件 - 尝试多种编码，尝试制表符和逗号分隔
-            encodings = ['utf-8', 'gbk', 'gb2312', 'gb18030', 'latin1']
-            for encoding in encodings:
-                try:
-                    # 尝试制表符分隔
-                    try:
-                        return pd.read_csv(uploaded_file, encoding=encoding, sep='\t')
-                    except:
-                        pass
-                    # 尝试逗号分隔
-                    return pd.read_csv(uploaded_file, encoding=encoding, sep=',')
-                except UnicodeDecodeError:
-                    continue
-            uploaded_file.seek(0)
-            return pd.read_csv(uploaded_file, encoding='utf-8', sep='\t', errors='replace')
-
-        elif file_name.endswith('.json'):
-            # JSON 文件
-            return pd.read_json(uploaded_file)
-
-        else:
-            # 默认当 CSV 处理
-            return pd.read_csv(uploaded_file)
-
-    except Exception as e:
-        raise Exception(f"文件读取失败: {str(e)}")
 
 st.title("🏟️ Step 2：场馆录入")
 st.markdown("批量导入或逐条添加赛事场馆信息")
@@ -84,12 +35,15 @@ with tab1:
     st.info("""
     **支持文件格式：**
     - CSV (.csv)、Excel (.xlsx, .xls)、TXT (.txt)、JSON (.json)
-    - 必须包含 `名称` 和 `地址` 列
-    - 可选列：`类型`、`容量`、`日均需求量_kg`
     - 编码：自动识别（UTF-8/GBK/GB2312）
     """)
+    st.caption("支持格式：CSV、Excel(.xlsx/.xls)、TXT、JSON")
 
-    uploaded_file = st.file_uploader("上传文件", type=["csv", "xlsx", "xls", "txt", "json"])
+    uploaded_file = st.file_uploader(
+        "上传场馆数据文件",
+        type=["csv", "xlsx", "xls", "txt", "json"],
+        help="支持 CSV、Excel、TXT、JSON 格式"
+    )
 
     api_key_batch = st.text_input(
         "高德API密钥 (批量地理编码)",
@@ -112,52 +66,98 @@ with tab1:
         if not api_key_batch:
             st.error("请输入API密钥")
         else:
-            try:
-                df = read_file_with_encoding(uploaded_file)
+            df, error = read_uploaded_file(uploaded_file)
+            if error:
+                st.error(f"❌ {error}")
+            elif df is not None and len(df) > 0:
+                st.success(f"✅ 成功读取 {len(df)} 条数据")
+                st.dataframe(df.head())
 
-                # 检查必需列
-                if "名称" not in df.columns or "地址" not in df.columns:
-                    st.error("文件必须包含「名称」和「地址」列")
+                # 智能匹配列名
+                columns = df.columns.tolist()
+                name_col = None
+                addr_col = None
+                demand_col = None
+                type_col = None
+                capacity_col = None
+
+                for col in columns:
+                    col_lower = str(col).lower()
+                    if '名称' in str(col) or 'name' in col_lower:
+                        name_col = col
+                    if '地址' in str(col) or 'address' in col_lower or 'location' in col_lower:
+                        addr_col = col
+                    if '需求' in str(col) or 'demand' in col_lower or '量' in str(col):
+                        demand_col = col
+                    if '类型' in str(col) or 'type' in col_lower or 'category' in col_lower:
+                        type_col = col
+                    if '容量' in str(col) or 'capacity' in col_lower or 'cap' in col_lower:
+                        capacity_col = col
+
+                # 如果找不到匹配的列，显示已识别的列名，让用户手动选择
+                if name_col is None or addr_col is None:
+                    st.warning("未能自动识别列名，请手动选择：")
+                    name_col = st.selectbox("选择【场馆名称】列", columns, index=columns.index(name_col) if name_col in columns else 0)
+                    addr_col = st.selectbox("选择【地址】列", columns, index=columns.index(addr_col) if addr_col in columns else 1)
+                    demand_col = st.selectbox("选择【日均需求量_kg】列（可选）", [None] + columns)
+                    type_col = st.selectbox("选择【类型】列（可选）", [None] + columns)
+                    capacity_col = st.selectbox("选择【容量】列（可选）", [None] + columns)
                 else:
-                    with st.spinner(f"正在处理 {len(df)} 个场馆..."):
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
+                    st.info(f"已识别：名称列=`{name_col}`, 地址列=`{addr_col}`")
+                    # 让用户确认或修改
+                    with st.expander("🔧 手动调整列映射"):
+                        name_col = st.selectbox("场馆名称列", columns, index=columns.index(name_col))
+                        addr_col = st.selectbox("地址列", columns, index=columns.index(addr_col))
+                        demand_col = st.selectbox("日均需求量_kg列（可选）", [None] + columns, index=0)
+                        type_col = st.selectbox("类型列（可选）", [None] + columns, index=0)
+                        capacity_col = st.selectbox("容量列（可选）", [None] + columns, index=0)
 
-                        for idx, row in df.iterrows():
-                            venue_name = str(row.get("名称", ""))
-                            venue_address = str(row.get("地址", ""))
-                            venue_demand = float(row.get("日均需求量_kg", 0)) if pd.notna(row.get("日均需求量_kg")) else 0.0
+                # 开始处理
+                with st.spinner(f"正在处理 {len(df)} 个场馆..."):
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
 
-                            venue = {
-                                "id": idx + 1,
-                                "name": venue_name,
-                                "address": venue_address,
-                                "type": str(row.get("类型", "比赛场馆")),
-                                "capacity": int(row.get("容量", 0)) if pd.notna(row.get("容量")) else 0,
-                                "demand_kg": venue_demand,
-                                "lng": None,
-                                "lat": None,
-                                "geocoded": False
-                            }
+                    for idx, row in df.iterrows():
+                        venue_name = str(row.get(name_col, ""))
+                        venue_address = str(row.get(addr_col, ""))
 
-                            # 地理编码
-                            result = geocode(venue_address, api_key_batch)
-                            if result:
-                                venue["lng"], venue["lat"] = result
-                                venue["geocoded"] = True
+                        if not venue_name or venue_name == 'nan':
+                            continue
 
-                            st.session_state.venues.append(venue)
-                            # 同步更新 demands
-                            st.session_state.demands[venue_name] = venue_demand
+                        venue_demand = float(row.get(demand_col, 0)) if demand_col and pd.notna(row.get(demand_col)) else 0.0
+                        venue_type = str(row.get(type_col, "比赛场馆")) if type_col and pd.notna(row.get(type_col)) else "比赛场馆"
+                        venue_capacity = int(row.get(capacity_col, 0)) if capacity_col and pd.notna(row.get(capacity_col)) else 0
 
-                            progress_bar.progress((idx + 1) / len(df))
-                            status_text.text(f"处理中: {venue_name} ({idx + 1}/{len(df)})")
+                        venue = {
+                            "id": idx + 1,
+                            "name": venue_name,
+                            "address": venue_address,
+                            "type": venue_type,
+                            "capacity": venue_capacity,
+                            "demand_kg": venue_demand,
+                            "lng": None,
+                            "lat": None,
+                            "geocoded": False
+                        }
 
-                        progress_bar.empty()
-                        status_text.empty()
+                        # 地理编码
+                        result = geocode(venue_address, api_key_batch)
+                        if result:
+                            venue["lng"], venue["lat"] = result
+                            venue["geocoded"] = True
 
-                        success_count = sum(1 for v in st.session_state.venues if v.get("geocoded"))
-                        st.success(f"批量导入完成！成功: {success_count}/{len(df)} 个场馆")
+                        st.session_state.venues.append(venue)
+                        # 同步更新 demands
+                        st.session_state.demands[venue_name] = venue_demand
+
+                        progress_bar.progress((idx + 1) / len(df))
+                        status_text.text(f"处理中: {venue_name} ({idx + 1}/{len(df)})")
+
+                    progress_bar.empty()
+                    status_text.empty()
+
+                    success_count = sum(1 for v in st.session_state.venues if v.get("geocoded"))
+                    st.success(f"批量导入完成！成功: {success_count}/{len(df)} 个场馆")
 
             except Exception as e:
                 st.error(f"文件处理失败: {e}")

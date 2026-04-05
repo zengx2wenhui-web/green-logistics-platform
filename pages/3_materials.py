@@ -2,58 +2,9 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+from utils.file_reader import read_uploaded_file
 
 st.set_page_config(page_title="物资需求", page_icon="📦")
-
-
-def read_file_with_encoding(uploaded_file):
-    """根据文件类型读取数据，支持 CSV/Excel/TXT/JSON"""
-    file_name = uploaded_file.name.lower()
-
-    try:
-        if file_name.endswith('.csv'):
-            # CSV 文件 - 尝试多种编码
-            encodings = ['utf-8', 'gbk', 'gb2312', 'gb18030', 'latin1']
-            for encoding in encodings:
-                try:
-                    return pd.read_csv(uploaded_file, encoding=encoding)
-                except UnicodeDecodeError:
-                    continue
-            # 如果都失败
-            uploaded_file.seek(0)
-            return pd.read_csv(uploaded_file, encoding='utf-8', errors='replace')
-
-        elif file_name.endswith(('.xlsx', '.xls')):
-            # Excel 文件
-            return pd.read_excel(uploaded_file, engine='openpyxl')
-
-        elif file_name.endswith('.txt'):
-            # TXT 文件 - 尝试多种编码，尝试制表符和逗号分隔
-            encodings = ['utf-8', 'gbk', 'gb2312', 'gb18030', 'latin1']
-            for encoding in encodings:
-                try:
-                    # 尝试制表符分隔
-                    try:
-                        return pd.read_csv(uploaded_file, encoding=encoding, sep='\t')
-                    except:
-                        pass
-                    # 尝试逗号分隔
-                    return pd.read_csv(uploaded_file, encoding=encoding, sep=',')
-                except UnicodeDecodeError:
-                    continue
-            uploaded_file.seek(0)
-            return pd.read_csv(uploaded_file, encoding='utf-8', sep='\t', errors='replace')
-
-        elif file_name.endswith('.json'):
-            # JSON 文件
-            return pd.read_json(uploaded_file)
-
-        else:
-            # 默认当 CSV 处理
-            return pd.read_csv(uploaded_file)
-
-    except Exception as e:
-        raise Exception(f"文件读取失败: {str(e)}")
 
 st.title("📦 Step 3：物资需求")
 st.markdown("为各场馆录入物资配送需求")
@@ -114,43 +65,84 @@ with tab1:
     st.info("""
     **支持文件格式：**
     - CSV (.csv)、Excel (.xlsx, .xls)、TXT (.txt)、JSON (.json)
-    - `场馆名称` - 必填，需与已录入场馆名称一致
-    - `物资类别` - 必填，如：器材设备、生活物资
-    - `物资名称` - 必填，具体物资名称
-    - `重量_kg` - 必填，重量（千克）
-    - `体积_m3` - 可选，体积（立方米）
-    - `紧急程度` - 可选：高/中/低
     - 编码：自动识别（UTF-8/GBK/GB2312）
     """)
+    st.caption("支持格式：CSV、Excel(.xlsx/.xls)、TXT、JSON")
 
-    uploaded_file = st.file_uploader("上传文件", type=["csv", "xlsx", "xls", "txt", "json"])
+    uploaded_file = st.file_uploader(
+        "上传物资需求文件",
+        type=["csv", "xlsx", "xls", "txt", "json"],
+        help="支持 CSV、Excel、TXT、JSON 格式"
+    )
 
     if uploaded_file:
-        try:
-            df = read_file_with_encoding(uploaded_file)
-            st.write("文件预览：")
-            st.dataframe(df.head(10), hide_index=True)
+        df, error = read_uploaded_file(uploaded_file)
+        if error:
+            st.error(f"❌ {error}")
+        elif df is not None and len(df) > 0:
+            st.success(f"✅ 成功读取 {len(df)} 条数据")
+            st.dataframe(df.head())
 
-            required_cols = ["场馆名称", "物资类别", "物资名称", "重量_kg"]
-            missing_cols = [col for col in required_cols if col not in df.columns]
+            # 智能匹配列名
+            columns = df.columns.tolist()
+            venue_col = None
+            category_col = None
+            material_col = None
+            weight_col = None
+            volume_col = None
+            urgency_col = None
 
-            if missing_cols:
-                st.error(f"缺少必需列: {', '.join(missing_cols)}")
+            for col in columns:
+                col_lower = str(col).lower()
+                if '场馆' in str(col) or 'venue' in col_lower:
+                    venue_col = col
+                if '类别' in str(col) or 'category' in col_lower or '分类' in str(col):
+                    category_col = col
+                if '物资' in str(col) or 'material' in col_lower or '物品' in str(col):
+                    material_col = col
+                if '重量' in str(col) or 'weight' in col_lower:
+                    weight_col = col
+                if '体积' in str(col) or 'volume' in col_lower:
+                    volume_col = col
+                if '紧急' in str(col) or 'urgency' in col_lower or 'priority' in col_lower:
+                    urgency_col = col
+
+            # 必需列智能匹配
+            if venue_col is None or category_col is None or material_col is None or weight_col is None:
+                st.warning("未能自动识别所有必需列，请手动选择：")
+                venue_col = st.selectbox("选择【场馆名称】列", columns, index=columns.index(venue_col) if venue_col in columns else 0)
+                category_col = st.selectbox("选择【物资类别】列", columns, index=columns.index(category_col) if category_col in columns else 1)
+                material_col = st.selectbox("选择【物资名称】列", columns, index=columns.index(material_col) if material_col in columns else 2)
+                weight_col = st.selectbox("选择【重量_kg】列", columns, index=columns.index(weight_col) if weight_col in columns else 3)
+                volume_col = st.selectbox("选择【体积_m3】列（可选）", [None] + columns)
+                urgency_col = st.selectbox("选择【紧急程度】列（可选）", [None] + columns)
             else:
-                if st.button("🚀 导入物资需求", type="primary"):
-                    imported_count = 0
-                    for _, row in df.iterrows():
-                        venue = row["场馆名称"]
-                        category = row["物资类别"]
-                        material = row["物资名称"]
-                        weight = float(row.get("重量_kg", 0))
-                        volume = float(row.get("体积_m3", 0)) if pd.notna(row.get("体积_m3")) else 0.0
-                        urgency = str(row.get("紧急程度", "中"))
+                st.info(f"已识别：场馆=`{venue_col}`, 类别=`{category_col}`, 物资=`{material_col}`, 重量=`{weight_col}`")
+                with st.expander("🔧 手动调整列映射"):
+                    venue_col = st.selectbox("场馆名称列", columns, index=columns.index(venue_col))
+                    category_col = st.selectbox("物资类别列", columns, index=columns.index(category_col))
+                    material_col = st.selectbox("物资名称列", columns, index=columns.index(material_col))
+                    weight_col = st.selectbox("重量_kg列", columns, index=columns.index(weight_col))
+                    volume_col = st.selectbox("体积_m3列（可选）", [None] + columns, index=0)
+                    urgency_col = st.selectbox("紧急程度列（可选）", [None] + columns, index=0)
 
-                        if venue not in st.session_state.material_demands:
-                            st.session_state.material_demands[venue] = {}
+            if st.button("🚀 导入物资需求", type="primary"):
+                imported_count = 0
+                for _, row in df.iterrows():
+                    venue = str(row.get(venue_col, ""))
+                    category = str(row.get(category_col, ""))
+                    material = str(row.get(material_col, ""))
+                    weight = float(row.get(weight_col, 0)) if pd.notna(row.get(weight_col)) else 0.0
+                    volume = float(row.get(volume_col, 0)) if volume_col and pd.notna(row.get(volume_col)) else 0.0
+                    urgency = str(row.get(urgency_col, "中")) if urgency_col and pd.notna(row.get(urgency_col)) else "中"
 
-                        if category not in st.session_state.material_demands[venue]:
+                    if not venue or venue == 'nan':
+                        continue
+
+                    if venue not in st.session_state.material_demands:
+                        st.session_state.material_demands[venue] = {}
+
+                    if category not in st.session_state.material_demands[venue]:
                             st.session_state.material_demands[venue][category] = {}
 
                         st.session_state.material_demands[venue][category][material] = {
