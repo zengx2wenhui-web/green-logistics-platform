@@ -32,9 +32,19 @@ st.set_page_config(
 )
 
 
-# ===================== Session State 初始化 =====================
+# ===================== 立即初始化 Session State =====================
+# 直接在模块级别初始化，确保session_state在任何函数被调用前就存在
+if "demands" not in st.session_state:
+    st.session_state.demands = {}
+if "venues" not in st.session_state:
+    st.session_state.venues = []
+if "material_demands" not in st.session_state:
+    st.session_state.material_demands = {}
+
+
+# ===================== Session State 初始化函数 =====================
 def init_session_state():
-    """初始化所有session_state数据"""
+    """初始化所有session_state数据（用于手动调用）"""
 
     # ----- 仓库数据 -----
     if "warehouse" not in st.session_state:
