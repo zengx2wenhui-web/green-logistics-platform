@@ -250,7 +250,6 @@ def main():
 
     with col_title:
         st.title("🌿 大型赛事绿色物流碳足迹优化平台")
-        st.markdown("**十五运会赛事物流碳排放智能分析与路径优化系统**")
 
     with col_breadcrumb:
         st.markdown("")
