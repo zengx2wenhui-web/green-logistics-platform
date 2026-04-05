@@ -276,8 +276,8 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
         progress_bar.progress(0.5)
 
         # ======== Step D: VRP求解 ========
-        status_text.text("🚚 Step C: VRP求解...")
-        progress_bar.progress(0.45)
+        status_text.text("🚚 Step D: VRP求解...")
+        progress_bar.progress(0.55)
 
         # 获取车辆配置
         if vehicles:
@@ -296,64 +296,18 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
             vehicle_capacity = 15000
             num_vehicles = 3
 
+        # 确保参数有效
+        if num_vehicles <= 0:
+            num_vehicles = 3
+        if vehicle_capacity <= 0:
+            vehicle_capacity = 15000
+
         demands_list = node_demands
-        routes = []
 
-        try:
-            from ortools.constraint_solver import routing_enums_pb2
-            from ortools.constraint_solver import pywrapcp
-
-            manager = pywrapcp.RoutingIndexManager(n, num_vehicles, 0)
-            routing = pywrapcp.RoutingModel(manager)
-
-            def distance_callback(from_index, to_index):
-                from_node = manager.IndexToNode(from_index)
-                to_node = manager.IndexToNode(to_index)
-                return int(distance_matrix[from_node][to_node] * 1000)
-
-            transit_callback_index = routing.RegisterTransitCallback(distance_callback)
-            routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
-
-            def demand_callback(from_index):
-                from_node = manager.IndexToNode(from_index)
-                return demands_list[from_node]
-
-            demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
-            routing.AddDimensionWithVehicleCapacity(
-                demand_callback_index, 0, [vehicle_capacity] * num_vehicles, True, "Capacity"
-            )
-
-            search_parameters = pywrapcp.DefaultRoutingSearchParameters()
-            search_parameters.first_solution_strategy = (
-                routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-            )
-            search_parameters.time_limit.seconds = 30
-
-            solution = routing.SolveWithParameters(search_parameters)
-
-            if solution:
-                route = []
-                vehicle_id = 0
-                while vehicle_id < num_vehicles:
-                    index = routing.Start(vehicle_id)
-                    if not routing.IsEnd(solution.Value(routing.NextVar(index))):
-                        single_route = [manager.IndexToNode(index)]
-                        while not routing.IsEnd(index):
-                            index = solution.Value(routing.NextVar(index))
-                            single_route.append(manager.IndexToNode(index))
-                        if len(single_route) > 2:
-                            routes.append(single_route)
-                    vehicle_id += 1
-                optimization_method = "OR-Tools"
-                st.success(f"✅ VRP求解完成（OR-Tools），使用 {len(routes)} 辆车")
-            else:
-                raise Exception("OR-Tools无解")
-
-        except Exception as e:
-            st.warning(f"OR-Tools求解失败: {e}，使用贪心算法")
-            routes = greedy_vrp(distance_matrix, demands_list, vehicle_capacity)
-            optimization_method = "贪心算法"
-            st.success(f"✅ VRP求解完成（贪心算法），生成 {len(routes)} 条路线")
+        # 使用贪心最近邻算法（稳定可靠）
+        routes = greedy_vrp(distance_matrix, demands_list, vehicle_capacity)
+        optimization_method = "贪心算法"
+        st.success(f"✅ VRP求解完成（贪心算法），生成 {len(routes)} 条路线")
 
         progress_bar.progress(0.6)
 
