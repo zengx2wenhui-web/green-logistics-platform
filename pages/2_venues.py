@@ -7,6 +7,20 @@ from utils.amap_api import geocode
 
 st.set_page_config(page_title="场馆录入", page_icon="🏟️")
 
+
+def read_csv_with_encoding(uploaded_file):
+    """尝试多种编码读取CSV文件"""
+    encodings = ['utf-8', 'gbk', 'gb2312', 'gb18030', 'latin1']
+    for encoding in encodings:
+        try:
+            return pd.read_csv(uploaded_file, encoding=encoding)
+        except UnicodeDecodeError:
+            continue
+    # 如果都失败，尝试二进制读取后解码
+    uploaded_file.seek(0)
+    content = uploaded_file.read()
+    return pd.read_csv(content, encoding='utf-8', errors='replace')
+
 st.title("🏟️ Step 2：场馆录入")
 st.markdown("批量导入或逐条添加赛事场馆信息")
 
@@ -62,7 +76,7 @@ with tab1:
             st.error("请输入API密钥")
         else:
             try:
-                df = pd.read_csv(uploaded_file)
+                df = read_csv_with_encoding(uploaded_file)
 
                 # 检查必需列
                 if "名称" not in df.columns or "地址" not in df.columns:

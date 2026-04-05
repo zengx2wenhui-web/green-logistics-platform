@@ -5,6 +5,20 @@ import plotly.express as px
 
 st.set_page_config(page_title="物资需求", page_icon="📦")
 
+
+def read_csv_with_encoding(uploaded_file):
+    """尝试多种编码读取CSV文件"""
+    encodings = ['utf-8', 'gbk', 'gb2312', 'gb18030', 'latin1']
+    for encoding in encodings:
+        try:
+            return pd.read_csv(uploaded_file, encoding=encoding)
+        except UnicodeDecodeError:
+            continue
+    # 如果都失败，尝试二进制读取后解码
+    uploaded_file.seek(0)
+    content = uploaded_file.read()
+    return pd.read_csv(content, encoding='utf-8', errors='replace')
+
 st.title("📦 Step 3：物资需求")
 st.markdown("为各场馆录入物资配送需求")
 
@@ -75,7 +89,7 @@ with tab1:
 
     if uploaded_file:
         try:
-            df = pd.read_csv(uploaded_file)
+            df = read_csv_with_encoding(uploaded_file)
             st.write("文件预览：")
             st.dataframe(df.head(10), hide_index=True)
 
