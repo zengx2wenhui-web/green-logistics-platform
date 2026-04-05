@@ -81,7 +81,8 @@ with tab1:
             st.error(f"❌ {error}")
         elif df is not None and len(df) > 0:
             st.success(f"✅ 成功读取 {len(df)} 条数据")
-            st.dataframe(df.head())
+            st.dataframe(df, width="stretch")
+            st.info(f"共读取 {len(df)} 条物资需求记录")
 
             # 智能匹配列名
             columns = df.columns.tolist()
@@ -152,9 +153,9 @@ with tab1:
                     }
                     imported_count += 1
 
-                    # 同步更新 demands
-                    sync_demands_from_material_demands()
-                    st.success(f"成功导入 {imported_count} 条物资需求记录！")
+                # 循环结束后统一同步 demands（只在循环外调用一次）
+                sync_demands_from_material_demands()
+                st.success(f"成功导入 {imported_count} 条物资需求记录！")
 
     # 模板下载
     st.markdown("---")
