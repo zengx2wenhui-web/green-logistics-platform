@@ -57,8 +57,17 @@ st.subheader("📊 不同车型碳排放对比")
 
 # 获取session_state中的数据
 vehicles = st.session_state.get("vehicles", [])
-demands = st.session_state.get("demands", {})
-total_demand_kg = sum(demands.values()) if demands else 0
+
+# 检查物资需求数据是否存在
+has_demands = "demands" in st.session_state and st.session_state["demands"] and len(st.session_state["demands"]) > 0
+
+if not has_demands:
+    st.warning("⚠️ 请先在【物资需求】页面录入或上传物资需求数据")
+    st.stop()
+else:
+    demands = st.session_state["demands"]
+    total_demand_kg = sum(demands.values()) if demands else 0
+    st.success(f"已加载 {len(demands)} 个场馆的物资需求数据，总需求 {total_demand_kg:,.1f} kg")
 
 # 假设运输距离（根据总需求估算，每吨每公里碳排放）
 # 这里用Haversine估算平均运输距离为50km

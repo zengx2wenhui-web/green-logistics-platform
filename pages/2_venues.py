@@ -74,7 +74,8 @@ with tab1:
                 st.error(f"❌ {error}")
             elif df is not None and len(df) > 0:
                 st.success(f"✅ 成功读取 {len(df)} 条数据")
-                st.dataframe(df.head())
+                st.dataframe(df, width="stretch")
+                st.info(f"共读取 {len(df)} 条场馆记录")
 
                 # 智能匹配列名
                 columns = df.columns.tolist()
