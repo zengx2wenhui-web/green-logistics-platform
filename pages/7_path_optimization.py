@@ -305,55 +305,57 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
 
         for vehicle_idx, route in enumerate(routes):
             route_info = {
-                "车辆编号": f"车辆{vehicle_idx + 1}",
-                "车型": vehicle_name,
-                "碳因子": emission_factor,
-                "访问场馆": [],
-                "各场馆装载明细": [],
-                "总装载量(kg)": 0,
-                "总行驶距离(km)": 0,
-                "总碳排放(kgCO2)": 0,
-                "路线坐标": []
+                "vehicle_id": vehicle_idx + 1,
+                "vehicle_name": f"车辆{vehicle_idx + 1}",
+                "vehicle_type": vehicle_name,
+                "emission_factor": emission_factor,
+                "route": route,
+                "visits": [],  # 访问的场馆名称列表
+                "load_details": [],  # 各场馆装载明细
+                "total_load_kg": 0,
+                "total_distance_km": 0,
+                "total_carbon_kg": 0,
+                "route_coords": []
             }
 
-            current_load = 0
+            current_load_ton = 0
 
             for stop_idx in route:
                 node = nodes[stop_idx]
-                route_info["路线坐标"].append([node["lat"], node["lng"]])
+                route_info["route_coords"].append([node["lat"], node["lng"]])
 
-                if stop_idx == 0:  # 仓库
+                if stop_idx == 0:
                     continue
 
                 venue_name = node["name"]
                 venue_demand = demands.get(venue_name, {})
                 if isinstance(venue_demand, dict):
                     detail = {
-                        "场馆": venue_name,
-                        "通用赛事物资(kg)": venue_demand.get("通用赛事物资", 0),
-                        "专项运动器材(kg)": venue_demand.get("专项运动器材", 0),
-                        "医疗物资(kg)": venue_demand.get("医疗物资", 0),
-                        "IT设备(kg)": venue_demand.get("IT设备", 0),
+                        "venue": venue_name,
+                        "general_materials_kg": venue_demand.get("通用赛事物资", 0),
+                        "sports_equipment_kg": venue_demand.get("专项运动器材", 0),
+                        "medical_materials_kg": venue_demand.get("医疗物资", 0),
+                        "it_equipment_kg": venue_demand.get("IT设备", 0),
                     }
                     total_venue_demand = venue_demand.get("总需求", sum(venue_demand.values()))
                 else:
                     total_venue_demand = float(venue_demand)
                     detail = {
-                        "场馆": venue_name,
-                        "通用赛事物资(kg)": total_venue_demand,
-                        "专项运动器材(kg)": 0,
-                        "医疗物资(kg)": 0,
-                        "IT设备(kg)": 0,
+                        "venue": venue_name,
+                        "general_materials_kg": total_venue_demand,
+                        "sports_equipment_kg": 0,
+                        "medical_materials_kg": 0,
+                        "it_equipment_kg": 0,
                     }
 
-                route_info["访问场馆"].append(venue_name)
-                route_info["各场馆装载明细"].append(detail)
-                route_info["总装载量(kg)"] += total_venue_demand
+                route_info["visits"].append(venue_name)
+                route_info["load_details"].append(detail)
+                route_info["total_load_kg"] += total_venue_demand
 
             # 计算路线距离和碳排放
             total_distance = 0.0
             total_carbon = 0.0
-            current_load_ton = route_info["总装载量(kg)"] / 1000
+            current_load_ton = route_info["total_load_kg"] / 1000
 
             for i in range(len(route) - 1):
                 from_idx = route[i]
@@ -364,8 +366,8 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
                 total_carbon += carbon
                 current_load_ton -= demands_list[to_idx] / 1000
 
-            route_info["总行驶距离(km)"] = total_distance
-            route_info["总碳排放(kgCO2)"] = total_carbon
+            route_info["total_distance_km"] = total_distance
+            route_info["total_carbon_kg"] = total_carbon
             route_results.append(route_info)
 
         progress_bar.progress(0.75)
@@ -380,31 +382,35 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
         baseline_carbon = sum(demands_list) / 1000 * baseline_distance * baseline_ef
 
         # 优化后碳排放
-        optimized_carbon = sum(r["总碳排放(kgCO2)"] for r in route_results)
+        optimized_carbon = sum(r["total_carbon_kg"] for r in route_results)
         carbon_reduction = baseline_carbon - optimized_carbon
         reduction_pct = (carbon_reduction / baseline_carbon * 100) if baseline_carbon > 0 else 0
 
-        # 保存结果到session_state
-        results = {
-            "nodes": nodes,
-            "routes": routes,
+        # ======== 保存结果 ========
+        status_text.text("💾 保存结果...")
+        progress_bar.progress(0.9)
+
+        # 保存到 st.session_state["optimization_results"]
+        st.session_state["optimization_results"] = {
             "route_results": route_results,
-            "distance_matrix": distance_matrix,
-            "total_distance_km": sum(r["总行驶距离(km)"] for r in route_results),
-            "total_carbon_kg": optimized_carbon,
-            "baseline_carbon_kg": baseline_carbon,
-            "carbon_reduction_kg": carbon_reduction,
-            "reduction_pct": reduction_pct,
+            "total_emission": optimized_carbon,
+            "baseline_emission": baseline_carbon,
+            "reduction_percent": reduction_pct,
+            "total_distance_km": sum(r["total_distance_km"] for r in route_results),
+            "num_vehicles_used": len(routes),
             "optimization_method": optimization_method,
             "distance_method": distance_method,
-            "vehicle_name": vehicle_name,
-            "vehicle_capacity": vehicle_capacity,
+            "vehicle_type": vehicle_name,
+            "vehicle_capacity_kg": vehicle_capacity,
             "emission_factor": emission_factor,
-            "num_vehicles_used": len(routes),
+            "nodes": nodes,
+            "routes": routes,
+            "demands": demands,
             "timestamp": datetime.now().isoformat()
         }
 
-        st.session_state["results"] = results
+        # 兼容旧格式
+        st.session_state["results"] = st.session_state["optimization_results"]
         progress_bar.progress(1.0)
         status_text.text("✅ 优化完成！")
 
@@ -416,11 +422,75 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
         with col_r1:
             st.metric("总距离", f"{results['total_distance_km']:.2f} km")
         with col_r2:
-            st.metric("总碳排放", f"{results['total_carbon_kg']:.2f} kg CO₂")
+            st.metric("总碳排放", f"{results['total_emission']:.2f} kg CO₂")
         with col_r3:
             st.metric("使用车辆", f"{results['num_vehicles_used']} 辆")
         with col_r4:
-            st.metric("减排比例", f"{results['reduction_pct']:.1f}%")
+            st.metric("减排比例", f"{results['reduction_percent']:.1f}%")
+
+        # ===== 导出功能 =====
+        st.markdown("---")
+        st.subheader("📥 导出结果")
+
+        # 车辆调度表CSV
+        csv_data = []
+        for rr in route_results:
+            route_str = "总仓库 → " + " → ".join(rr["visits"]) + " → 总仓库"
+            csv_data.append({
+                "车辆编号": rr["vehicle_name"],
+                "车型": rr["vehicle_type"],
+                "路线": route_str,
+                "访问场馆数": len(rr["visits"]),
+                "总装载量_kg": rr["total_load_kg"],
+                "总距离_km": round(rr["total_distance_km"], 2),
+                "总碳排放_kgCO2": round(rr["total_carbon_kg"], 2)
+            })
+        df_csv = pd.DataFrame(csv_data)
+        csv_str = df_csv.to_csv(index=False, encoding="utf-8-sig")
+        st.download_button(
+            label="📥 下载车辆调度表(CSV)",
+            data=csv_str,
+            file_name="vehicle_dispatch_schedule.csv",
+            mime="text/csv"
+        )
+
+        # 完整优化报告
+        report_lines = []
+        report_lines.append("=" * 60)
+        report_lines.append("物流路径优化报告")
+        report_lines.append("=" * 60)
+        report_lines.append(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        report_lines.append(f"优化方法: {optimization_method}")
+        report_lines.append(f"距离计算: {distance_method}")
+        report_lines.append("")
+        report_lines.append("【数据摘要】")
+        report_lines.append(f"  总仓库: {warehouse.get('name', '总仓库')} ({warehouse.get('address', '')})")
+        report_lines.append(f"  场馆数量: {len(venues)}")
+        report_lines.append(f"  总物资需求: {sum(demands.values()) if isinstance(demands, dict) else 0:.0f} kg")
+        report_lines.append(f"  使用车辆: {len(routes)} 辆 ({vehicle_name})")
+        report_lines.append("")
+        report_lines.append("【优化结果】")
+        report_lines.append(f"  总行驶距离: {results['total_distance_km']:.2f} km")
+        report_lines.append(f"  总碳排放: {results['total_emission']:.2f} kg CO₂")
+        report_lines.append(f"  基线碳排放: {results['baseline_emission']:.2f} kg CO₂")
+        report_lines.append(f"  减排比例: {results['reduction_percent']:.1f}%")
+        report_lines.append("")
+        report_lines.append("【车辆调度详情】")
+        for rr in route_results:
+            route_str = " → ".join(rr["visits"]) if rr["visits"] else "无"
+            report_lines.append(f"  {rr['vehicle_name']} ({rr['vehicle_type']}):")
+            report_lines.append(f"    路线: 总仓库 → {route_str} → 总仓库")
+            report_lines.append(f"    装载量: {rr['total_load_kg']:.0f} kg | 距离: {rr['total_distance_km']:.2f} km | 碳排放: {rr['total_carbon_kg']:.2f} kg CO₂")
+        report_lines.append("")
+        report_lines.append("=" * 60)
+
+        report_str = "\n".join(report_lines)
+        st.download_button(
+            label="📥 下载完整优化报告(TXT)",
+            data=report_str,
+            file_name="optimization_report.txt",
+            mime="text/plain"
+        )
 
     except Exception as e:
         st.error(f"优化过程出错: {e}")
@@ -428,9 +498,10 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
         st.code(traceback.format_exc())
 
 # ======== 结果展示 ========
-if "results" in st.session_state and st.session_state["results"]:
-    results = st.session_state["results"]
+res = st.session_state.get("optimization_results") or st.session_state.get("results")
 
+if res:
+    results = res
     st.markdown("---")
     st.markdown("### 📊 优化结果")
 
@@ -441,59 +512,56 @@ if "results" in st.session_state and st.session_state["results"]:
         st.subheader("🗺️ 物流路线地图")
 
         # 构建Folium地图
-        center_lat = sum(n["lat"] for n in results["nodes"]) / len(results["nodes"])
-        center_lng = sum(n["lng"] for n in results["nodes"]) / len(results["nodes"])
+        nodes = results.get("nodes", [])
+        center_lat = sum(n["lat"] for n in nodes) / len(nodes) if nodes else 0
+        center_lng = sum(n["lng"] for n in nodes) / len(nodes) if nodes else 0
         m = folium.Map(location=[center_lat, center_lng], zoom_start=12)
 
         # 颜色列表
         colors = ["red", "blue", "green", "purple", "orange", "darkred", "lightred", "beige", "darkblue", "darkgreen"]
 
         # 标记仓库
-        warehouse_node = results["nodes"][0]
-        folium.Marker(
-            [warehouse_node["lat"], warehouse_node["lng"]],
-            popup=f"<b>总仓库</b><br>{warehouse_node['name']}",
-            tooltip="总仓库",
-            icon=folium.Icon(color="red", icon="star")
-        ).add_to(m)
-
-        # 标记场馆
-        for node in results["nodes"][1:]:
-            venue_demand = demands.get(node["name"], {})
-            if isinstance(venue_demand, dict):
-                total = venue_demand.get("总需求", sum(venue_demand.values()))
-            else:
-                total = float(venue_demand)
-
-            popup_html = f"""
-            <b>{node['name']}</b><br>
-            总需求: {total:.0f} kg<br>
-            地址: {node.get('address', '')}
-            """
+        if nodes:
+            warehouse_node = nodes[0]
             folium.Marker(
-                [node["lat"], node["lng"]],
-                popup=popup_html,
-                tooltip=node["name"],
-                icon=folium.Icon(color="blue", icon="info-sign")
+                [warehouse_node["lat"], warehouse_node["lng"]],
+                popup=f"<b>总仓库</b><br>{warehouse_node['name']}",
+                tooltip="总仓库",
+                icon=folium.Icon(color="red", icon="star")
             ).add_to(m)
+
+            # 标记场馆
+            for node in nodes[1:]:
+                venue_demand = demands.get(node["name"], {})
+                if isinstance(venue_demand, dict):
+                    total = venue_demand.get("总需求", sum(venue_demand.values()))
+                else:
+                    total = float(venue_demand)
+
+                popup_html = f"<b>{node['name']}</b><br>总需求: {total:.0f} kg<br>地址: {node.get('address', '')}"
+                folium.Marker(
+                    [node["lat"], node["lng"]],
+                    popup=popup_html,
+                    tooltip=node["name"],
+                    icon=folium.Icon(color="blue", icon="info-sign")
+                ).add_to(m)
 
         # 绘制路线
-        route_coords = []
-        for i, route_result in enumerate(results["route_results"]):
+        route_results_list = results.get("route_results", [])
+        for i, route_result in enumerate(route_results_list):
             color = colors[i % len(colors)]
-            coords = route_result["路线坐标"]
+            coords = route_result.get("route_coords", [])
 
-            # 绘制路线折线
-            folium.PolyLine(
-                coords,
-                color=color,
-                weight=4,
-                opacity=0.8,
-                popup=f"{route_result['车辆编号']} ({route_result['车型']})"
-            ).add_to(m)
-
-            # 添加方向箭头（简化为中点标记）
             if len(coords) > 1:
+                folium.PolyLine(
+                    coords,
+                    color=color,
+                    weight=4,
+                    opacity=0.8,
+                    popup=f"{route_result['vehicle_name']} ({route_result['vehicle_type']})"
+                ).add_to(m)
+
+                # 中点箭头
                 mid_idx = len(coords) // 2
                 mid_point = coords[mid_idx]
                 folium.Marker(
@@ -508,9 +576,9 @@ if "results" in st.session_state and st.session_state["results"]:
         # 添加图例
         legend_html = '<div style="position:fixed;bottom:50px;left:50px;z-index:1000;background:white;padding:10px;border-radius:5px;border:1px solid gray;font-size:11pt;">'
         legend_html += '<b>🚛 车辆路线</b><br>'
-        for i, rr in enumerate(results["route_results"]):
+        for i, rr in enumerate(route_results_list):
             color = colors[i % len(colors)]
-            legend_html += f'<i style="background:{color};width:12px;height:12px;display:inline-block;margin-right:5px;"></i>{rr["车辆编号"]}<br>'
+            legend_html += f'<i style="background:{color};width:12px;height:12px;display:inline-block;margin-right:5px;"></i>{rr["vehicle_name"]}<br>'
         legend_html += '</div>'
         m.get_root().html.add_child(folium.Element(legend_html))
 
@@ -520,39 +588,40 @@ if "results" in st.session_state and st.session_state["results"]:
     with tab_table:
         st.subheader("📋 车辆调度详情")
 
-        for i, route_result in enumerate(results["route_results"]):
-            with st.expander(f"🚛 {route_result['车辆编号']}（{route_result['车型']}）"):
+        for i, route_result in enumerate(route_results_list):
+            with st.expander(f"🚛 {route_result['vehicle_name']}（{route_result['vehicle_type']}）"):
                 # 路线
-                route_str = "总仓库 → " + " → ".join(route_result["访问场馆"]) + " → 总仓库"
+                route_str = "总仓库 → " + " → ".join(route_result["visits"]) + " → 总仓库"
                 st.write(f"**路线：** {route_str}")
 
                 # 装载明细表格
-                if route_result["各场馆装载明细"]:
-                    df_load = pd.DataFrame(route_result["各场馆装载明细"])
+                if route_result.get("load_details"):
+                    df_load = pd.DataFrame(route_result["load_details"])
                     st.dataframe(df_load, hide_index=True, use_container_width=True)
 
                 # 统计
                 col_v1, col_v2, col_v3 = st.columns(3)
                 with col_v1:
-                    load_pct = (route_result["总装载量(kg)"] / results["vehicle_capacity"] * 100) if results["vehicle_capacity"] > 0 else 0
-                    st.metric("总装载量", f"{route_result['总装载量(kg)']:.0f} kg", delta=f"利用率 {load_pct:.0f}%")
+                    cap = results.get("vehicle_capacity_kg", 15000)
+                    load_pct = (route_result["total_load_kg"] / cap * 100) if cap > 0 else 0
+                    st.metric("总装载量", f"{route_result['total_load_kg']:.0f} kg", delta=f"利用率 {load_pct:.0f}%")
                 with col_v2:
-                    st.metric("行驶距离", f"{route_result['总行驶距离(km)']:.2f} km")
+                    st.metric("行驶距离", f"{route_result['total_distance_km']:.2f} km")
                 with col_v3:
-                    st.metric("碳排放", f"{route_result['总碳排放(kgCO2)']:.2f} kg CO₂")
+                    st.metric("碳排放", f"{route_result['total_carbon_kg']:.2f} kg CO₂")
 
         # 汇总表格
         st.markdown("---")
         st.subheader("📊 车辆调度汇总")
         summary_rows = []
-        for rr in results["route_results"]:
+        for rr in route_results_list:
             summary_rows.append({
-                "车辆编号": rr["车辆编号"],
-                "车型": rr["车型"],
-                "访问场馆数": len(rr["访问场馆"]),
-                "装载量(kg)": rr["总装载量(kg)"],
-                "距离(km)": rr["总行驶距离(km)"],
-                "碳排放(kgCO₂)": rr["总碳排放(kgCO2)"]
+                "车辆编号": rr["vehicle_name"],
+                "车型": rr["vehicle_type"],
+                "访问场馆数": len(rr["visits"]),
+                "装载量(kg)": rr["total_load_kg"],
+                "距离(km)": round(rr["total_distance_km"], 2),
+                "碳排放(kgCO₂)": round(rr["total_carbon_kg"], 2)
             })
         df_summary = pd.DataFrame(summary_rows)
         st.dataframe(df_summary, hide_index=True, use_container_width=True)
@@ -563,17 +632,19 @@ if "results" in st.session_state and st.session_state["results"]:
 
         col_c1, col_c2, col_c3 = st.columns(3)
         with col_c1:
-            st.metric("基线碳排放", f"{results['baseline_carbon_kg']:.2f} kg CO₂")
+            st.metric("基线碳排放", f"{results.get('baseline_emission', 0):.2f} kg CO₂")
         with col_c2:
-            st.metric("优化后碳排放", f"{results['total_carbon_kg']:.2f} kg CO₂")
+            st.metric("优化后碳排放", f"{results.get('total_emission', 0):.2f} kg CO₂")
         with col_c3:
-            st.metric("减排量", f"{results['carbon_reduction_kg']:.2f} kg CO₂", delta=f"-{results['reduction_pct']:.1f}%")
+            reduction = results.get('baseline_emission', 0) - results.get('total_emission', 0)
+            pct = results.get('reduction_percent', 0)
+            st.metric("减排量", f"{reduction:.2f} kg CO₂", delta=f"-{pct:.1f}%")
 
         # 碳排放对比柱状图
         import plotly.express as px
         df_carbon = pd.DataFrame({
             "方案": ["基线方案\n(单独配送)", "优化方案\n(VRP调度)"],
-            "碳排放(kg CO₂)": [results['baseline_carbon_kg'], results['total_carbon_kg']]
+            "碳排放(kg CO₂)": [results.get('baseline_emission', 0), results.get('total_emission', 0)]
         })
         fig_bar = px.bar(
             df_carbon,
@@ -587,7 +658,7 @@ if "results" in st.session_state and st.session_state["results"]:
         st.plotly_chart(fig_bar, use_container_width=True)
 
         # 等效种树
-        tree_equivalent = results['carbon_reduction_kg'] / 21.7
+        tree_equivalent = reduction / 21.7
         st.info(f"🌳 减排量相当于种植 **{tree_equivalent:.1f} 棵树**（每棵树年吸收21.7kg CO₂）")
 
 else:
