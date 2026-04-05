@@ -41,6 +41,6 @@ maxCachedMessageAge = 2
 # 地图配置
 mapboxToken = ""  # 如需使用Mapbox，填入Token
 
-[api]
-# API代理配置（如需要）
-[api].maxUploadSize = 200
+[server]
+# 最大上传文件大小 (MB)
+maxUploadSize = 200

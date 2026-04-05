@@ -159,9 +159,6 @@ with tab1:
                     success_count = sum(1 for v in st.session_state.venues if v.get("geocoded"))
                     st.success(f"批量导入完成！成功: {success_count}/{len(df)} 个场馆")
 
-            except Exception as e:
-                st.error(f"文件处理失败: {e}")
-
 with tab2:
     st.subheader("在线表单逐条添加")
 

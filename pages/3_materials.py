@@ -143,21 +143,18 @@ with tab1:
                         st.session_state.material_demands[venue] = {}
 
                     if category not in st.session_state.material_demands[venue]:
-                            st.session_state.material_demands[venue][category] = {}
+                        st.session_state.material_demands[venue][category] = {}
 
-                        st.session_state.material_demands[venue][category][material] = {
-                            "weight_kg": weight,
-                            "volume_m3": volume,
-                            "urgency": urgency
-                        }
-                        imported_count += 1
+                    st.session_state.material_demands[venue][category][material] = {
+                        "weight_kg": weight,
+                        "volume_m3": volume,
+                        "urgency": urgency
+                    }
+                    imported_count += 1
 
                     # 同步更新 demands
                     sync_demands_from_material_demands()
                     st.success(f"成功导入 {imported_count} 条物资需求记录！")
-
-        except Exception as e:
-            st.error(f"文件读取失败: {e}")
 
     # 模板下载
     st.markdown("---")
