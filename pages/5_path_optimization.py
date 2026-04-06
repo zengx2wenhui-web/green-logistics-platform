@@ -157,14 +157,14 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
 
         # 节点列表：[仓库, 场馆1, 场馆2, ...]
         # 只添加有坐标的场馆
-        nodes = [{"name": warehouse["name"], "lng": warehouse["lng"], "lat": warehouse["lat"]}]
+        nodes = [{"name": warehouse["name"], "lng": warehouse["lng"], "lat": warehouse["lat"], "is_warehouse": True}]
         node_demands = [0]  # 仓库需求为0
 
         venues_with_coords = []
         for v in venues:
             if v.get("lng") is not None and v.get("lat") is not None:
                 venues_with_coords.append(v)
-                nodes.append({"name": v["name"], "lng": v["lng"], "lat": v["lat"]})
+                nodes.append({"name": v["name"], "lng": v["lng"], "lat": v["lat"], "is_warehouse": False})
                 venue_demand = demands.get(v["name"], {})
                 if isinstance(venue_demand, dict):
                     total = venue_demand.get("总需求", sum(venue_demand.values()))
@@ -288,6 +288,35 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
                     if node["name"] == v["name"]:
                         node["cluster_id"] = clustering_result.get("labels", [0] * len(venue_nodes_list))[i] if "labels" in clustering_result else 0
                         break
+
+        # 保底：如果聚类成功但 depot_results 为空，从聚类结果中提取中转仓信息
+        if optimal_k > 1 and len(depot_results) == 0 and "labels" in clustering_result:
+            labels = clustering_result["labels"]
+            for i in range(optimal_k):
+                cluster_venues = [venue_nodes_list[j] for j in range(len(venue_nodes_list)) if labels[j] == i]
+                if cluster_venues:
+                    avg_lng = sum(v["lng"] for v in cluster_venues) / len(cluster_venues)
+                    avg_lat = sum(v["lat"] for v in cluster_venues) / len(cluster_venues)
+                    served_names = [v["name"] for v in cluster_venues]
+                    if api_key:
+                        try:
+                            from utils.amap_api import reverse_geocode
+                            address = reverse_geocode(avg_lng, avg_lat, api_key)
+                        except:
+                            address = f"({avg_lng:.4f}, {avg_lat:.4f}) 附近"
+                    else:
+                        address = f"({avg_lng:.4f}, {avg_lat:.4f}) 附近"
+                    depot_results.append({
+                        "中转仓编号": f"中转仓{i+1}",
+                        "建议地址": address,
+                        "经度": round(avg_lng, 6),
+                        "纬度": round(avg_lat, 6),
+                        "服务场馆数": len(served_names),
+                        "服务场馆列表": "、".join(served_names[:5]) + (f" 等{len(served_names)}个" if len(served_names) > 5 else "")
+                    })
+            if depot_results:
+                st.subheader("🏭 中转仓选址结果")
+                st.dataframe(pd.DataFrame(depot_results), use_container_width=True, hide_index=True)
 
         progress_bar.progress(0.5)
 

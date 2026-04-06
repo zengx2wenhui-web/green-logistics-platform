@@ -124,11 +124,21 @@ with tab1:
         st.session_state["demands_df"] = edited_df.copy()
 
         # 同时保存为 dict 格式，方便路径优化页面读取
+        # 保存结构：{场馆名: {物资类别: 数量, ...}}
         demands = {}
         for _, row in edited_df.iterrows():
             venue = row["场馆名称"]
-            total = row["总需求(kg)"]
-            demands[venue] = total
+            general = float(row.get("通用赛事物资(kg)", 0) or 0)
+            sports = float(row.get("专项运动器材(kg)", 0) or 0)
+            medical = float(row.get("医疗物资(kg)", 0) or 0)
+            it_equip = float(row.get("IT设备(kg)", 0) or 0)
+            demands[venue] = {
+                "通用赛事物资": general,
+                "专项运动器材": sports,
+                "医疗物资": medical,
+                "IT设备": it_equip,
+                "总需求": general + sports + medical + it_equip
+            }
 
         st.session_state["demands"] = demands
 
@@ -259,11 +269,22 @@ with tab2:
                             df_upload_mapped[col] = 0
                     st.session_state["demands_df"] = df_upload_mapped
 
-                # 同步 demands
+                # 同步 demands（使用分类结构）
                 demands = {}
                 df_save = st.session_state["demands_df"]
                 for _, row in df_save.iterrows():
-                    demands[row["场馆名称"]] = sum(row[c] for c in WEIGHT_COLS)
+                    venue = row["场馆名称"]
+                    general = float(row.get("通用赛事物资(kg)", 0) or 0)
+                    sports = float(row.get("专项运动器材(kg)", 0) or 0)
+                    medical = float(row.get("医疗物资(kg)", 0) or 0)
+                    it_equip = float(row.get("IT设备(kg)", 0) or 0)
+                    demands[venue] = {
+                        "通用赛事物资": general,
+                        "专项运动器材": sports,
+                        "医疗物资": medical,
+                        "IT设备": it_equip,
+                        "总需求": general + sports + medical + it_equip
+                    }
                 st.session_state["demands"] = demands
 
                 st.success(f"✅ 已合并 {len(df_upload_mapped)} 条记录到物资需求表！")
