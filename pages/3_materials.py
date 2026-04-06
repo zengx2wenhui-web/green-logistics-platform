@@ -317,7 +317,7 @@ st.subheader("📋 当前已保存的物资需求数据")
 
 if st.session_state.get("demands") and len(st.session_state["demands"]) > 0:
     demands = st.session_state["demands"]
-    total_demand = sum(v.get("总需求", 0) for v in demands.values())
+    total_demand = sum(v.get("总需求", 0) if isinstance(v, dict) else v for v in demands.values())
 
     col_m1, col_m2, col_m3 = st.columns(3)
     with col_m1:
@@ -329,7 +329,7 @@ if st.session_state.get("demands") and len(st.session_state["demands"]) > 0:
         st.metric("场均需求", f"{avg_demand:,.0f} kg")
 
     # 显示汇总表
-    summary_list = [{"场馆": k, "总需求(kg)": v.get("总需求", 0)} for k, v in demands.items()]
+    summary_list = [{"场馆": k, "总需求(kg)": v.get("总需求", 0) if isinstance(v, dict) else v} for k, v in demands.items()]
     st.dataframe(pd.DataFrame(summary_list), hide_index=True, use_container_width=True)
 
     st.success("✅ 数据已同步，可供【路径优化】页面使用")
