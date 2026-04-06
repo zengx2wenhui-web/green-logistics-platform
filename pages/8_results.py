@@ -98,6 +98,16 @@ route_results = results.get("route_results", [])
 nodes = results.get("nodes", [])
 routes = results.get("routes", [])
 
+# ===== 中转仓选址结果 =====
+depot_results_list = results.get("depot_results", [])
+if depot_results_list and len(depot_results_list) > 0:
+    st.subheader("🏭 中转仓选址结果")
+    depot_df = pd.DataFrame(depot_results_list)
+    st.dataframe(depot_df, use_container_width=True, hide_index=True)
+    st.markdown("")
+
+st.markdown("---")
+
 tab1, tab2, tab3 = st.tabs(["🗺️ 物流网络地图", "📊 碳排放对比", "📋 调度详情"])
 
 # ======== Tab 1: 物流网络地图 ========
@@ -136,6 +146,25 @@ with tab1:
                     tooltip=node["name"],
                     icon=folium.Icon(color="red", icon="star")
                 ).add_to(m)
+
+                # 标记中转仓（红色方块）
+                depot_results_map = results.get("depot_results", [])
+                for depot in depot_results_map:
+                    depot_lat = depot.get("纬度", 0)
+                    depot_lng = depot.get("经度", 0)
+                    if depot_lat != 0 and depot_lng != 0:
+                        popup_html = (
+                            f"<b>🏭 {depot.get('中转仓编号', '')}</b><br>"
+                            f"建议地址：{depot.get('建议地址', '未知')}<br>"
+                            f"坐标：({depot_lng}, {depot_lat})<br>"
+                            f"服务场馆数：{depot.get('服务场馆数', 0)}个"
+                        )
+                        folium.Marker(
+                            [depot_lat, depot_lng],
+                            popup=folium.Popup(popup_html, max_width=300),
+                            tooltip=depot.get("中转仓编号", "中转仓"),
+                            icon=folium.Icon(color="red", icon="home", prefix="fa")
+                        ).add_to(m)
             else:
                 # 场馆
                 venue_name = node.get("name", "")
@@ -162,6 +191,7 @@ with tab1:
                     background:white; padding:10px; border-radius:5px; border:1px solid gray;">
             <h4 style="margin:0 0 5px 0;">📍 图例</h4>
             <p style="margin:3px 0;"><span style="color:red;">⭐</span> 总仓库（配送起点）</p>
+            <p style="margin:3px 0;"><span style="color:red;">🏠</span> 中转仓</p>
             <p style="margin:3px 0;"><span style="color:blue;">●</span> 场馆（配送终点）</p>
             <p style="margin:3px 0;">— 配送路线</p>
         </div>
@@ -281,17 +311,72 @@ with tab3:
             mime="text/csv"
         )
 
-        # 装载明细表
+        # 装载明细表（6列：场馆 + 4种物资 + 总需求量）
         st.markdown("#### 各车辆装载明细")
 
+        demands_data = results.get("demands", {})
+
         for i, rr in enumerate(route_results):
-            with st.expander(f"🚛 {rr.get('vehicle_name', f'车辆 {i+1}')} 装载明细"):
+            vehicle_label = f"🚛 {rr.get('vehicle_name', f'车辆 {i+1}')}（{rr.get('vehicle_type', '未知')}）"
+            with st.expander(vehicle_label, expanded=False):
+                # 路线信息
+                visits = rr.get("visits", [])
+                route_str = " → ".join(["总仓库"] + visits + ["总仓库"])
+                st.markdown(f"**路线：** {route_str}")
+                st.divider()
+
+                # 构建6列物资明细表格
                 load_details = rr.get("load_details", [])
                 if load_details:
-                    df_load = pd.DataFrame(load_details)
-                    st.dataframe(df_load, hide_index=True, use_container_width=True)
+                    table_rows = []
+                    for stop in load_details:
+                        venue_name = stop.get("venue", "")
+                        row = {
+                            "场馆": venue_name,
+                            "通用赛事物资(kg)": stop.get("general_materials_kg", 0),
+                            "专项运动器材(kg)": stop.get("sports_equipment_kg", 0),
+                            "医疗物资(kg)": stop.get("medical_materials_kg", 0),
+                            "IT设备(kg)": stop.get("it_equipment_kg", 0),
+                        }
+                        row["总需求量(kg)"] = (
+                            row["通用赛事物资(kg)"]
+                            + row["专项运动器材(kg)"]
+                            + row["医疗物资(kg)"]
+                            + row["IT设备(kg)"]
+                        )
+                        table_rows.append(row)
+
+                    detail_df = pd.DataFrame(table_rows)
+
+                    # 添加合计行
+                    if len(detail_df) > 0:
+                        total_row = {
+                            "场馆": "合计",
+                            "通用赛事物资(kg)": detail_df["通用赛事物资(kg)"].sum(),
+                            "专项运动器材(kg)": detail_df["专项运动器材(kg)"].sum(),
+                            "医疗物资(kg)": detail_df["医疗物资(kg)"].sum(),
+                            "IT设备(kg)": detail_df["IT设备(kg)"].sum(),
+                            "总需求量(kg)": detail_df["总需求量(kg)"].sum(),
+                        }
+                        detail_df = pd.concat([detail_df, pd.DataFrame([total_row])], ignore_index=True)
+
+                    st.dataframe(detail_df, use_container_width=True, hide_index=True)
                 else:
-                    st.info("无装载明细")
+                    st.info("无装载明细数据")
+
+                st.divider()
+
+                # 汇总指标
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    max_load = results.get("vehicle_capacity_kg", 15000)
+                    total_load = rr.get("total_load_kg", 0)
+                    utilization = (total_load / max_load * 100) if max_load > 0 else 0
+                    st.metric("总装载量", f"{total_load:.0f} kg", delta=f"利用率 {utilization:.0f}%")
+                with col2:
+                    st.metric("总行驶距离", f"{rr.get('total_distance_km', 0):.2f} km")
+                with col3:
+                    st.metric("碳排放", f"{rr.get('total_carbon_kg', 0):.2f} kg CO₂")
 
     else:
         st.info("无路线数据")
