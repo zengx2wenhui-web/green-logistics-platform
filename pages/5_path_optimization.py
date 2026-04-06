@@ -88,7 +88,7 @@ with col1:
 with col2:
     st.success(f"✅ {len(venues)} 个场馆")
 with col3:
-    total_demand = sum(demands.values()) if isinstance(demands, dict) else 0
+    total_demand = sum(v.get("总需求", 0) for v in demands.values()) if isinstance(demands, dict) else 0
     st.metric("总需求", f"{total_demand:,.0f} kg")
 with col4:
     total_vehicles = sum(v.get("count", 0) for v in vehicles) if vehicles else 0
@@ -528,7 +528,7 @@ if st.button("🚀 开始优化计算", type="primary", use_container_width=True
         report_lines.append("【数据摘要】")
         report_lines.append(f"  总仓库: {warehouse.get('name', '总仓库')} ({warehouse.get('address', '')})")
         report_lines.append(f"  场馆数量: {len(venues)}")
-        report_lines.append(f"  总物资需求: {sum(demands.values()) if isinstance(demands, dict) else 0:.0f} kg")
+        report_lines.append(f"  总物资需求: {sum(v.get('总需求', 0) for v in demands.values()) if isinstance(demands, dict) else 0:.0f} kg")
         report_lines.append(f"  使用车辆: {len(routes)} 辆 ({vehicle_name})")
         report_lines.append("")
         report_lines.append("【优化结果】")

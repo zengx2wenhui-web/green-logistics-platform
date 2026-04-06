@@ -66,7 +66,7 @@ if not has_demands:
     st.stop()
 else:
     demands = st.session_state["demands"]
-    total_demand_kg = sum(demands.values()) if demands else 0
+    total_demand_kg = sum(v.get("总需求", 0) for v in demands.values()) if demands else 0
     st.success(f"已加载 {len(demands)} 个场馆的物资需求数据，总需求 {total_demand_kg:,.1f} kg")
 
 # 假设运输距离（根据总需求估算，每吨每公里碳排放）
