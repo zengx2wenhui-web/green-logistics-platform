@@ -1,314 +1,468 @@
-"""高德地图API工具模块"""
+"""高德地图 API 工具模块
+
+提供地理编码、逆地理编码、驾车距离查询及批量距离测量功能。
+核心优化：
+- 指数退避重试机制，应对网络抖动
+- SQLite 持久化缓存，保护每日 5000 次免费配额
+- 批量距离测量 API（/v3/distance），大幅降低距离矩阵构建耗时
+- 线程安全的令牌桶限流器（带超时上限）
+"""
 import requests
 import time
-import logging
 import math
-from typing import Tuple, Optional, List, Dict
+import sqlite3
+import logging
+from pathlib import Path
+from typing import Tuple, Optional, List, Dict, Any
 from threading import Lock
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 请求频率限制：每秒最多10次
+# ===================== 配置常量 =====================
+_RATE_LIMIT: int = 10          # 每秒最大请求数
+_RATE_LIMIT_MAX_WAIT: float = 5.0  # 限流最长等待时间（秒）
+_MAX_RETRIES: int = 3          # 最大重试次数
+_RETRY_BASE_DELAY: float = 1.0 # 重试基础延迟（秒）
+_REQUEST_TIMEOUT: int = 10     # 单次请求超时（秒）
+_CACHE_DB_PATH: Path = Path("data/cache/amap_cache.db")
+
+# 中国经纬度合法范围
+_LNG_RANGE: Tuple[float, float] = (73.0, 135.0)
+_LAT_RANGE: Tuple[float, float] = (3.0, 54.0)
+
+# ===================== 令牌桶限流器 =====================
 _rate_limiter_lock = Lock()
-_request_timestamps: list = []
-_RATE_LIMIT = 10  # 每秒请求数上限
+_request_timestamps: List[float] = []
 
 
 def _acquire_rate_limit() -> None:
-    """获取请求令牌，超过限制则等待"""
+    """线程安全的令牌桶限流器，超过 QPS 限制时阻塞等待（带超时上限）。"""
     global _request_timestamps
-    current_time = time.time()
-
     with _rate_limiter_lock:
-        # 清理1秒前的所有时间戳
-        _request_timestamps = [ts for ts in _request_timestamps if current_time - ts < 1.0]
-
+        now = time.time()
+        _request_timestamps = [ts for ts in _request_timestamps if now - ts < 1.0]
         if len(_request_timestamps) >= _RATE_LIMIT:
-            # 需要等待
-            sleep_time = 1.0 - (current_time - _request_timestamps[0])
+            sleep_time = min(1.0 - (now - _request_timestamps[0]),
+                             _RATE_LIMIT_MAX_WAIT)
             if sleep_time > 0:
                 time.sleep(sleep_time)
-            # 重新清理
-            current_time = time.time()
-            _request_timestamps = [ts for ts in _request_timestamps if current_time - ts < 1.0]
-
+            now = time.time()
+            _request_timestamps = [ts for ts in _request_timestamps if now - ts < 1.0]
         _request_timestamps.append(time.time())
 
 
-def haversine_distance(coord1: Tuple[float, float], coord2: Tuple[float, float]) -> float:
+# ===================== SQLite 缓存层 =====================
+
+_cache_conn: Optional[sqlite3.Connection] = None
+_cache_lock = Lock()
+
+
+def _get_cache_conn() -> sqlite3.Connection:
+    """获取模块级 SQLite 缓存连接（单例）。"""
+    global _cache_conn
+    if _cache_conn is None:
+        _CACHE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _cache_conn = sqlite3.connect(str(_CACHE_DB_PATH), check_same_thread=False)
+        _cache_conn.execute("""
+            CREATE TABLE IF NOT EXISTS amap_cache (
+                cache_key   TEXT PRIMARY KEY,
+                namespace   TEXT,
+                value1      REAL,
+                value2      REAL
+            )
+        """)
+        _cache_conn.commit()
+    return _cache_conn
+
+
+def _cache_read(namespace: str, key: str) -> Optional[Tuple[float, float]]:
+    """从 SQLite 缓存读取。"""
+    with _cache_lock:
+        conn = _get_cache_conn()
+        row = conn.execute(
+            "SELECT value1, value2 FROM amap_cache WHERE cache_key=? AND namespace=?",
+            (key, namespace),
+        ).fetchone()
+        return (row[0], row[1]) if row else None
+
+
+def _cache_write(namespace: str, key: str, v1: float, v2: float) -> None:
+    """向 SQLite 缓存写入。"""
+    with _cache_lock:
+        conn = _get_cache_conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO amap_cache (cache_key, namespace, value1, value2) "
+            "VALUES (?, ?, ?, ?)",
+            (key, namespace, v1, v2),
+        )
+        conn.commit()
+
+
+
+# ===================== 带重试的 HTTP 请求 =====================
+
+def _request_with_retry(
+    url: str,
+    params: Dict[str, str],
+    label: str = "API",
+) -> Optional[Dict[str, Any]]:
     """
-    用Haversine公式计算两个经纬度之间的直线距离(km)
+    带指数退避重试的 HTTP GET 请求。
+
+    Args:
+        url: 请求 URL
+        params: 请求参数字典
+        label: 日志标签
+
+    Returns:
+        解析后的 JSON 响应字典；全部重试失败返回 None
+    """
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            _acquire_rate_limit()
+            response = requests.get(url, params=params, timeout=_REQUEST_TIMEOUT)
+            response.raise_for_status()
+            data: Dict[str, Any] = response.json()
+
+            if data.get("status") == "1":
+                return data
+
+            # API 业务错误（如 key 无效），不重试
+            errcode = data.get("errcode", "")
+            errmsg = data.get("errmsg", "未知错误")
+            logger.error(f"[{label}] API业务错误: {errcode} - {errmsg}")
+            return None
+
+        except requests.exceptions.Timeout:
+            logger.warning(f"[{label}] 请求超时 (第{attempt}/{_MAX_RETRIES}次)")
+        except requests.exceptions.ConnectionError:
+            logger.warning(f"[{label}] 网络连接失败 (第{attempt}/{_MAX_RETRIES}次)")
+        except requests.exceptions.HTTPError as e:
+            logger.warning(f"[{label}] HTTP错误: {e} (第{attempt}/{_MAX_RETRIES}次)")
+        except Exception as e:
+            logger.error(f"[{label}] 未预期异常: {e}")
+            return None
+
+        # 指数退避
+        if attempt < _MAX_RETRIES:
+            delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            logger.info(f"[{label}] {delay:.1f}s 后重试...")
+            time.sleep(delay)
+
+    logger.error(f"[{label}] 已达最大重试次数({_MAX_RETRIES})，放弃请求")
+    return None
+
+
+# ===================== Haversine 直线距离 =====================
+
+def haversine_distance(
+    coord1: Tuple[float, float],
+    coord2: Tuple[float, float],
+) -> float:
+    """
+    Haversine 公式计算两点间球面直线距离。
 
     Args:
         coord1: 起点坐标 (lng, lat)
         coord2: 终点坐标 (lng, lat)
 
     Returns:
-        直线距离，单位 km
+        直线距离（km）
     """
-    R = 6371.0
-    lon1, lat1 = math.radians(coord1[0]), math.radians(coord1[1])
-    lon2, lat2 = math.radians(coord2[0]), math.radians(coord2[1])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    c = 2 * math.asin(math.sqrt(a))
-    return R * c
+    from utils.distance_matrix import haversine_distance as _haversine
+    return _haversine(coord1[0], coord1[1], coord2[0], coord2[1])
 
+
+# ===================== 坐标校验 =====================
+
+def _validate_coord(coord: Tuple[float, float], label: str = "坐标") -> bool:
+    """校验坐标是否在中国经纬度范围内。"""
+    if not coord or len(coord) != 2:
+        logger.error(f"[坐标校验] {label}格式错误，应为 (lng, lat)")
+        return False
+    lng, lat = coord
+    if not (_LNG_RANGE[0] <= lng <= _LNG_RANGE[1]
+            and _LAT_RANGE[0] <= lat <= _LAT_RANGE[1]):
+        logger.error(f"[坐标校验] {label}超出中国范围: ({lng}, {lat})")
+        return False
+    return True
+
+
+# ===================== 地理编码 =====================
 
 def geocode(address: str, api_key: str) -> Optional[Tuple[float, float]]:
     """
-    调用高德地理编码API，将地址转换为经纬度坐标
+    调用高德地理编码 API，将地址转换为经纬度坐标（支持本地缓存）。
 
     Args:
-        address: 地址字符串，如"广州市天河区体育西路"
-        api_key: 高德地图API密钥
+        address: 地址字符串，如 "广州市天河区体育西路"
+        api_key: 高德地图 API 密钥
 
     Returns:
-        (lng, lat) 元组，失败返回None
-
-    Example:
-        >>> result = geocode("广州市天河区体育西路", "your_api_key")
-        >>> if result:
-        ...     lng, lat = result
+        (lng, lat) 元组；失败返回 None
     """
     if not address or not address.strip():
         logger.error("[高德地理编码] 地址不能为空")
-        print("[高德地理编码] 错误: 地址不能为空")
         return None
-
     if not api_key or not api_key.strip():
         logger.error("[高德地理编码] API密钥不能为空")
-        print("[高德地理编码] 错误: API密钥不能为空")
         return None
 
-    url = "https://restapi.amap.com/v3/geocode/geo"
-    params = {
-        "key": api_key,
-        "address": address.strip()
-    }
+    address = address.strip()
 
-    try:
-        _acquire_rate_limit()
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-
-        status = data.get("status")
-        if status is None:
-            logger.error("[高德地理编码] API返回格式异常，缺少status字段")
-            print("[高德地理编码] 错误: API返回格式异常")
-            return None
-
-        if status != "1":
-            errcode = data.get("errcode", "")
-            errmsg = data.get("errmsg", "未知错误")
-            logger.error(f"[高德地理编码] API调用失败: {errcode} - {errmsg}")
-            print(f"[高德地理编码] 错误: API调用失败 ({errcode})")
-            return None
-
-        geocodes = data.get("geocodes", [])
-        if not geocodes:
-            logger.warning(f"[高德地理编码] 未找到地址对应的坐标: {address}")
-            print(f"[高德地理编码] 警告: 未找到该地址的坐标信息: {address}")
-            return None
-
-        location = geocodes[0].get("location", "")
-        if not location:
-            logger.error("[高德地理编码] 返回的坐标字段为空")
-            print("[高德地理编码] 错误: 返回的坐标字段为空")
-            return None
-
-        lng, lat = location.split(",")
-        lng, lat = float(lng), float(lat)
-
-        logger.info(f"[高德地理编码] 成功: {address} -> ({lng}, {lat})")
+    # 查 SQLite 缓存
+    cached = _cache_read("geocode", address)
+    if cached:
+        lng, lat = cached
+        logger.info(f"[高德地理编码] 缓存命中: {address} -> ({lng}, {lat})")
         return (lng, lat)
 
-    except requests.exceptions.Timeout:
-        logger.error("[高德地理编码] 请求超时(10秒)")
-        print("[高德地理编码] 错误: 请求超时，请检查网络连接")
-        return None
-    except requests.exceptions.ConnectionError:
-        logger.error("[高德地理编码] 网络连接失败")
-        print("[高德地理编码] 错误: 网络连接失败，请检查网络")
-        return None
-    except requests.exceptions.HTTPError as e:
-        logger.error(f"[高德地理编码] HTTP错误: {e}")
-        print(f"[高德地理编码] 错误: HTTP请求失败 ({e})")
-        return None
-    except (ValueError, IndexError) as e:
-        logger.error(f"[高德地理编码] 数据解析失败: {e}")
-        print("[高德地理编码] 错误: 坐标数据解析失败")
-        return None
-    except Exception as e:
-        logger.error(f"[高德地理编码] 未知错误: {e}")
-        print(f"[高德地理编码] 错误: 未知错误 ({e})")
+    # 调用 API
+    data = _request_with_retry(
+        url="https://restapi.amap.com/v3/geocode/geo",
+        params={"key": api_key, "address": address},
+        label="高德地理编码",
+    )
+    if data is None:
         return None
 
+    geocodes = data.get("geocodes", [])
+    if not geocodes:
+        logger.warning(f"[高德地理编码] 未找到地址对应的坐标: {address}")
+        return None
+
+    location = geocodes[0].get("location", "")
+    if not location:
+        logger.error("[高德地理编码] 返回的坐标字段为空")
+        return None
+
+    try:
+        lng, lat = map(float, location.split(","))
+    except (ValueError, IndexError) as e:
+        logger.error(f"[高德地理编码] 坐标解析失败: {e}")
+        return None
+
+    # 写 SQLite 缓存
+    _cache_write("geocode", address, lng, lat)
+    logger.info(f"[高德地理编码] 成功: {address} -> ({lng}, {lat})")
+    return (lng, lat)
+
+
+# ===================== 逆地理编码 =====================
 
 def reverse_geocode(lng: float, lat: float, api_key: str) -> str:
     """
-    调用高德逆地理编码API，把经纬度转换为具体地址。
+    调用高德逆地理编码 API，将经纬度转换为地址字符串。
 
     Args:
         lng: 经度
         lat: 纬度
-        api_key: 高德地图API密钥
+        api_key: 高德地图 API 密钥
 
     Returns:
-        地址字符串，失败返回 "未知地址(经度, 纬度)"
+        地址字符串；失败返回 "未知地址(lng, lat)"
     """
+    fallback = f"未知地址({lng:.4f}, {lat:.4f})"
     if not api_key or not api_key.strip():
-        return f"未知地址({lng:.4f}, {lat:.4f})"
+        return fallback
 
-    url = "https://restapi.amap.com/v3/geocode/regeo"
-    params = {
-        "key": api_key,
-        "location": f"{lng},{lat}",
-        "extensions": "base",
-        "output": "json"
-    }
+    data = _request_with_retry(
+        url="https://restapi.amap.com/v3/geocode/regeo",
+        params={
+            "key": api_key,
+            "location": f"{lng},{lat}",
+            "extensions": "base",
+            "output": "json",
+        },
+        label="高德逆地理编码",
+    )
+    if data is None:
+        return fallback
 
-    try:
-        _acquire_rate_limit()
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+    regeocode = data.get("regeocode")
+    if regeocode:
+        address = regeocode.get("formatted_address", "")
+        if address:
+            return address
+    return fallback
 
-        if data.get("status") == "1" and data.get("regeocode"):
-            address = data["regeocode"].get("formatted_address", "")
-            if address:
-                return address
-        return f"未知地址({lng:.4f}, {lat:.4f})"
-    except Exception as e:
-        logger.error(f"[高德逆地理编码] 错误: {e}")
-        return f"未知地址({lng:.4f}, {lat:.4f})"
 
+# ===================== 驾车距离（单对单） =====================
 
 def get_driving_distance(
     origin: Tuple[float, float],
     destination: Tuple[float, float],
-    api_key: str
+    api_key: str,
+    use_cache: bool = True,
 ) -> Optional[Tuple[float, float]]:
     """
-    调用高德路径规划API，获取驾车距离和时间
+    调用高德路径规划 API 获取驾车距离和时间（支持缓存与重试）。
 
     Args:
-        origin: 起点坐标 (lng, lat)，如 (113.2644, 23.1291)
-        destination: 终点坐标 (lng, lat)，如 (113.2650, 23.1320)
-        api_key: 高德地图API密钥
+        origin: 起点坐标 (lng, lat)
+        destination: 终点坐标 (lng, lat)
+        api_key: 高德地图 API 密钥
+        use_cache: 是否使用本地缓存
 
     Returns:
-        (distance_km, duration_min) 元组，失败返回None
-
-    Example:
-        >>> result = get_driving_distance(
-        ...     (113.2644, 23.1291),
-        ...     (113.2650, 23.1320),
-        ...     "your_api_key"
-        ... )
-        >>> if result:
-        ...     distance, duration = result
+        (distance_km, duration_min) 元组；失败返回 None
     """
-    if not origin or len(origin) != 2:
-        logger.error("[高德路径规划] 起点坐标格式错误")
-        print("[高德路径规划] 错误: 起点坐标格式错误，应为(lng, lat)")
+    if not _validate_coord(origin, "起点") or not _validate_coord(destination, "终点"):
         return None
-
-    if not destination or len(destination) != 2:
-        logger.error("[高德路径规划] 终点坐标格式错误")
-        print("[高德路径规划] 错误: 终点坐标格式错误，应为(lng, lat)")
-        return None
-
     if not api_key or not api_key.strip():
         logger.error("[高德路径规划] API密钥不能为空")
-        print("[高德路径规划] 错误: API密钥不能为空")
         return None
 
-    # 验证坐标范围
-    lng1, lat1 = origin
-    lng2, lat2 = destination
+    # 查 SQLite 缓存
+    if use_cache:
+        cache_key = f"{origin[0]:.6f},{origin[1]:.6f}->{destination[0]:.6f},{destination[1]:.6f}"
+        cached = _cache_read("driving", cache_key)
+        if cached:
+            dist, dur = cached
+            logger.info(f"[高德路径规划] 缓存命中: {origin} -> {destination}")
+            return (dist, dur)
+    else:
+        cache_key = ""
 
-    if not (73.0 <= lng1 <= 135.0 and 3.0 <= lat1 <= 54.0):
-        logger.error(f"[高德路径规划] 起点坐标超出中国范围: {origin}")
-        print(f"[高德路径规划] 错误: 起点坐标超出中国范围: {origin}")
+    # 调用 API
+    data = _request_with_retry(
+        url="https://restapi.amap.com/v3/direction/driving",
+        params={
+            "key": api_key,
+            "origin": f"{origin[0]},{origin[1]}",
+            "destination": f"{destination[0]},{destination[1]}",
+        },
+        label="高德路径规划",
+    )
+    if data is None:
         return None
 
-    if not (73.0 <= lng2 <= 135.0 and 3.0 <= lat2 <= 54.0):
-        logger.error(f"[高德路径规划] 终点坐标超出中国范围: {destination}")
-        print(f"[高德路径规划] 错误: 终点坐标超出中国范围: {destination}")
+    route = data.get("route", {})
+    paths = route.get("paths", [])
+    if not paths:
+        logger.warning("[高德路径规划] 未找到可行路线")
         return None
 
-    url = "https://restapi.amap.com/v3/direction/driving"
-    params = {
-        "key": api_key,
-        "origin": f"{origin[0]},{origin[1]}",
-        "destination": f"{destination[0]},{destination[1]}"
-    }
-
+    path = paths[0]
     try:
-        _acquire_rate_limit()
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+        distance_km = float(path.get("distance", "0")) / 1000
+        duration_min = float(path.get("duration", "0")) / 60
+    except (ValueError, TypeError) as e:
+        logger.error(f"[高德路径规划] 数据解析失败: {e}")
+        return None
 
-        status = data.get("status")
-        if status is None:
-            logger.error("[高德路径规划] API返回格式异常，缺少status字段")
-            print("[高德路径规划] 错误: API返回格式异常")
-            return None
+    # 写 SQLite 缓存
+    if use_cache:
+        _cache_write("driving", cache_key, distance_km, duration_min)
 
-        if status != "1":
-            errcode = data.get("errcode", "")
-            errmsg = data.get("errmsg", "未知错误")
-            logger.error(f"[高德路径规划] API调用失败: {errcode} - {errmsg}")
-            print(f"[高德路径规划] 错误: API调用失败 ({errcode})")
-            return None
+    logger.info(
+        f"[高德路径规划] 成功: {origin} -> {destination}, "
+        f"{distance_km:.2f}km, {duration_min:.1f}min"
+    )
+    return (distance_km, duration_min)
 
-        route = data.get("route", {})
-        if not route:
-            logger.warning("[高德路径规划] 未找到可行路线")
-            print("[高德路径规划] 警告: 两点间没有可行的驾车路线")
-            return None
 
-        paths = route.get("paths", [])
-        if not paths:
-            logger.warning("[高德路径规划] 路径结果为空")
-            print("[高德路径规划] 警告: 未找到路径规划结果")
-            return None
+# ===================== 批量距离测量 =====================
 
-        # 取最优路径（第一条，策略已内置）
-        path = paths[0]
+def batch_distance(
+    origins: List[Tuple[float, float]],
+    destinations: List[Tuple[float, float]],
+    api_key: str,
+    mode: int = 1,
+) -> Optional[List[Dict[str, float]]]:
+    """
+    调用高德距离测量 API（/v3/distance），批量获取驾车距离和时间。
 
-        distance_str = path.get("distance", "0")
-        duration_str = path.get("duration", "0")
+    单次请求支持 1 个起点对最多 100 个终点，可将 3600 次路径规划请求压缩至
+    几十次距离测量请求，大幅降低距离矩阵构建耗时与配额消耗。
 
+    Args:
+        origins: 起点坐标列表（当前版本仅取第一个）
+        destinations: 终点坐标列表（最多 100 个）
+        api_key: 高德地图 API 密钥
+        mode: 1=驾车（默认），0=直线
+
+    Returns:
+        与 destinations 等长的结果列表；失败返回 None
+    """
+    if not api_key or not api_key.strip():
+        logger.error("[批量距离测量] API密钥不能为空")
+        return None
+    if not origins or not destinations:
+        logger.error("[批量距离测量] 起点或终点列表为空")
+        return None
+
+    origins_str = "|".join(f"{o[0]},{o[1]}" for o in origins)
+    destinations_str = "|".join(f"{d[0]},{d[1]}" for d in destinations)
+
+    data = _request_with_retry(
+        url="https://restapi.amap.com/v3/distance",
+        params={
+            "key": api_key,
+            "origins": origins_str,
+            "destination": destinations_str,
+            "type": str(mode),
+        },
+        label="批量距离测量",
+    )
+    if data is None:
+        return None
+
+    results_raw = data.get("results", [])
+    results: List[Dict[str, float]] = []
+    for item in results_raw:
         try:
-            distance_km = float(distance_str) / 1000  # 米转公里
-            duration_min = float(duration_str) / 60   # 秒转分钟
-        except (ValueError, TypeError) as e:
-            logger.error(f"[高德路径规划] 距离/时间数据解析失败: {e}")
-            print("[高德路径规划] 错误: 距离/时间数据解析失败")
-            return None
+            dist_km = float(item.get("distance", "0")) / 1000
+            dur_min = float(item.get("duration", "0")) / 60
+            results.append({"distance_km": dist_km, "duration_min": dur_min})
+        except (ValueError, TypeError):
+            results.append({"distance_km": 0.0, "duration_min": 0.0})
 
-        logger.info(f"[高德路径规划] 成功: {origin} -> {destination}, 距离{distance_km:.2f}km, 时间{duration_min:.1f}分钟")
-        return (distance_km, duration_min)
+    return results
 
-    except requests.exceptions.Timeout:
-        logger.error("[高德路径规划] 请求超时(10秒)")
-        print("[高德路径规划] 错误: 请求超时，请检查网络连接")
-        return None
-    except requests.exceptions.ConnectionError:
-        logger.error("[高德路径规划] 网络连接失败")
-        print("[高德路径规划] 错误: 网络连接失败，请检查网络")
-        return None
-    except requests.exceptions.HTTPError as e:
-        logger.error(f"[高德路径规划] HTTP错误: {e}")
-        print(f"[高德路径规划] 错误: HTTP请求失败 ({e})")
-        return None
-    except Exception as e:
-        logger.error(f"[高德路径规划] 未知错误: {e}")
-        print(f"[高德路径规划] 错误: 未知错误 ({e})")
-        return None
+
+def batch_distance_one_to_many(
+    origin: Tuple[float, float],
+    destinations: List[Tuple[float, float]],
+    api_key: str,
+    chunk_size: int = 100,
+) -> List[Dict[str, float]]:
+    """
+    单起点到多终点的批量驾车距离查询，自动分片处理超过 100 个终点的场景。
+
+    当 API 调用失败时，使用 Haversine × 1.4 路网系数进行降级估算，并在结果中
+    标记 source="fallback"。
+
+    Args:
+        origin: 起点坐标 (lng, lat)
+        destinations: 终点坐标列表
+        api_key: API 密钥
+        chunk_size: 每批最多终点数（高德限制 100）
+
+    Returns:
+        与 destinations 等长的列表
+    """
+    all_results: List[Dict[str, float]] = []
+
+    for start in range(0, len(destinations), chunk_size):
+        chunk = destinations[start:start + chunk_size]
+        result = batch_distance([origin], chunk, api_key, mode=1)
+
+        if result is not None and len(result) == len(chunk):
+            all_results.extend(result)
+        else:
+            # 降级为 Haversine 估算
+            logger.warning(
+                f"[批量距离测量] 分片 {start}~{start + len(chunk)} 失败，Haversine 降级"
+            )
+            for dest in chunk:
+                straight = haversine_distance(origin, dest)
+                road_dist = round(straight * 1.4, 2)
+                all_results.append({
+                    "distance_km": road_dist,
+                    "duration_min": round(road_dist / 60 * 60, 1),
+                    "source": "fallback",
+                })
+
+    return all_results

@@ -38,13 +38,16 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. 配置高德API密钥
+> 注意：本项目无需安装 OR-Tools 等重量级求解器，所有核心算法均为纯 Python 实现。
 
-编辑 `app.py` 或在侧边栏输入您的API密钥：
+### 4. 配置高德API密钥（可选）
 
+高德API密钥仅用于逆地理编码（中转仓地址显示），路径优化计算使用本地Haversine距离，**无需API密钥即可正常运行**。
+
+如需启用：
 1. 注册高德开放平台账号: https://lbs.amap.com/
 2. 创建应用，获取 Web API 密钥
-3. 在应用配置中填入密钥
+3. 在路径优化页面的参数设置中填入密钥
 
 ### 5. 运行应用
 
