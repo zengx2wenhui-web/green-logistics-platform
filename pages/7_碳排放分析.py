@@ -226,3 +226,7 @@ st.plotly_chart(fig_sens, use_container_width=True)
 
 st.markdown("---")
 st.caption(f"分析基于第五步优化结果 | 计算时间：{results.get('timestamp', '未知')}")
+
+st.markdown("---")
+if st.button("下一步：优化结果 ➡️", type="primary", use_container_width=True):
+    st.switch_page("pages/8_优化结果.py")

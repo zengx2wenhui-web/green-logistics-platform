@@ -604,3 +604,7 @@ if res and isinstance(res, dict) and res.get("route_results"):
 
 elif not res:
     st.info(" 完成参数设置后，点击「 开始优化计算」按钮")
+
+st.markdown("---")
+if st.button("下一步：碳排放概览 ➡️", type="primary", use_container_width=True):
+    st.switch_page("pages/6_碳排放概览.py")

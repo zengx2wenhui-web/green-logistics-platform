@@ -381,3 +381,7 @@ with tab_export:
 st.markdown("---")
 st.caption(f"优化结果 | 计算时间：{results.get('timestamp', '未知')} | "
            f"树等效标准：12 kg CO₂/棵年")
+
+st.markdown("---")
+if st.button("返回首页 🏠", type="primary", use_container_width=True):
+    st.switch_page("app.py")

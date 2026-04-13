@@ -134,3 +134,7 @@ if st.button(" 保存配置", type="primary", use_container_width=True):
     st.success(f"已保存 {len(vehicle_configs)} 种车型，共 {total_vehicles} 辆车")
 
 st.caption(" 提示：车型参数来源于 data/vehicle_types.json，碳因子单位为 kg CO₂/吨km")
+
+st.markdown("---")
+if st.button("下一步：路径优化 ➡️", type="primary", use_container_width=True):
+    st.switch_page("pages/5_路径优化.py")

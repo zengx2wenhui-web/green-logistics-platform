@@ -2,6 +2,8 @@
 import streamlit as st
 import pandas as pd
 import folium
+from folium import MacroElement
+from jinja2 import Template
 from streamlit_folium import st_folium
 from utils.amap_api import geocode
 from utils.file_reader import read_uploaded_file, LogisticsDataProcessor
@@ -17,8 +19,21 @@ if "venues" not in st.session_state:
 if "demands" not in st.session_state:
     st.session_state.demands = {}
 
-# 场馆类型
-VENUE_TYPES = ["比赛场馆", "训练场馆", "媒体中心", "运动员村", "餐饮中心", "医疗站点", "停车场", "其他"]
+# ===================== 全局颜色映射 =====================
+# Folium Icon 颜色名 -> 场馆类型
+VENUE_TYPES = ["比赛场地", "训练场地", "媒体中心", "运动员村", "餐饮中心", "医疗站点", "停车场", "其他"]
+
+# Folium Icon color name 到 CSS hex 的映射，用于图注一致性
+VENUE_TYPE_COLORS = {
+    "比赛场地": {"folium": "blue",      "hex": "#38AADD"},
+    "训练场地": {"folium": "cadetblue", "hex": "#5F9EA0"},
+    "媒体中心": {"folium": "purple",    "hex": "#D252B9"},
+    "运动员村": {"folium": "green",     "hex": "#72AF26"},
+    "餐饮中心": {"folium": "orange",    "hex": "#F69730"},
+    "医疗站点": {"folium": "red",       "hex": "#CB2B3E"},
+    "停车场":   {"folium": "gray",      "hex": "#575757"},
+    "其他":     {"folium": "lightgray", "hex": "#A3A3A3"},
+}
 
 tab1, tab2 = st.tabs([" 批量导入", " 在线表单"])
 
@@ -118,7 +133,7 @@ with tab1:
                             "id": len(st.session_state.venues) + 1,
                             "name": venue_name,
                             "address": venue_address,
-                            "type": "比赛场馆",
+                            "type": "比赛场地",
                             "capacity": 0,
                             "demand_kg": venue_demand,
                             "lng": None, "lat": None,
@@ -209,9 +224,9 @@ with tab2:
     st.markdown("---")
     st.subheader(" 快速添加预置场馆")
     preset_venues = [
-        {"name": "主体育场", "address": "广州市天河区体育西路", "type": "比赛场馆", "capacity": 80000},
-        {"name": "游泳中心", "address": "广州市天河区体育西路", "type": "比赛场馆", "capacity": 4000},
-        {"name": "体育馆A", "address": "广州市天河区体育东路", "type": "比赛场馆", "capacity": 12000},
+        {"name": "主体育场", "address": "广州市天河区体育西路", "type": "比赛场地", "capacity": 80000},
+        {"name": "游泳中心", "address": "广州市天河区体育西路", "type": "比赛场地", "capacity": 4000},
+        {"name": "体育馆A", "address": "广州市天河区体育东路", "type": "比赛场地", "capacity": 12000},
         {"name": "运动员村", "address": "广州市天河区奥体中心", "type": "运动员村", "capacity": 15000},
     ]
     cols = st.columns(len(preset_venues))
@@ -229,6 +244,12 @@ with tab2:
                 st.session_state.demands[preset["name"]] = demand
                 st.toast(f"已添加 {preset['name']}")
                 st.rerun()
+
+# 向下兼容：旧数据中“比赛场馆”自动映射为“比赛场地”
+_TYPE_COMPAT = {"比赛场馆": "比赛场地", "训练场馆": "训练场地"}
+for v in st.session_state.venues:
+    if v.get("type") in _TYPE_COMPAT:
+        v["type"] = _TYPE_COMPAT[v["type"]]
 
 st.markdown("---")
 
@@ -257,7 +278,7 @@ if st.session_state.venues:
         st.metric("总需求量", f"{total_demand:,.0f} kg")
 
     # 删除场馆
-    st.markdown("** 删除场馆**")
+    st.markdown("删除场馆")
     venue_names = [v["name"] for v in st.session_state.venues]
     sel = st.selectbox("选择要删除的场馆", [""] + venue_names)
     if sel and st.button("确认删除"):
@@ -279,17 +300,14 @@ if st.session_state.venues:
         center_lng = sum(v["lng"] for v in geocoded_venues) / len(geocoded_venues)
         m = folium.Map(location=[center_lat, center_lng], zoom_start=13)
 
-        type_colors = {
-            "比赛场馆": "blue", "训练场馆": "cyan", "媒体中心": "purple",
-            "运动员村": "green", "餐饮中心": "orange", "医疗站点": "red",
-            "停车场": "gray", "其他": "lightgray",
-        }
         for venue in st.session_state.venues:
             if venue.get("lat") and venue.get("lng"):
-                color = type_colors.get(venue.get("type", "其他"), "blue")
+                vtype = venue.get("type", "其他")
+                color_info = VENUE_TYPE_COLORS.get(vtype, VENUE_TYPE_COLORS["其他"])
+                color = color_info["folium"]
                 popup_html = (
                     f"<b>{venue['name']}</b><br>"
-                    f"类型: {venue['type']}<br>"
+                    f"类型: {vtype}<br>"
                     f"地址: {venue['address']}<br>"
                     f"需求: {venue['demand_kg']:,.0f} kg"
                 )
@@ -298,6 +316,32 @@ if st.session_state.venues:
                     popup=popup_html, tooltip=venue["name"],
                     icon=folium.Icon(color=color, icon="star")
                 ).add_to(m)
+
+        # 添加悬浮图注（Legend）
+        legend_items = "".join(
+            f'<li><span style="background:{info["hex"]};width:14px;height:14px;'
+            f'display:inline-block;margin-right:6px;border:1px solid #999;'
+            f'border-radius:2px;vertical-align:middle;"></span>{vtype}</li>'
+            for vtype, info in VENUE_TYPE_COLORS.items()
+        )
+        legend_html = f"""
+        {{% macro html(this, kwargs) %}}
+        <div style="
+            position: fixed; bottom: 30px; left: 30px; z-index: 1000;
+            background: white; padding: 10px 14px; border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.25); font-size: 13px;
+            line-height: 1.8; max-width: 180px;
+        ">
+            <b style="font-size:14px;">场馆类型</b>
+            <ul style="list-style:none;padding:4px 0 0 0;margin:0;">
+                {legend_items}
+            </ul>
+        </div>
+        {{% endmacro %}}
+        """
+        legend_element = MacroElement()
+        legend_element._template = Template(legend_html)
+        m.get_root().add_child(legend_element)
 
         st_folium(m, width=800, height=500)
     else:
@@ -317,3 +361,7 @@ if st.button(" 导出场馆CSV", use_container_width=True) and st.session_state.
     } for v in st.session_state.venues])
     csv = df_export.to_csv(index=False)
     st.download_button("下载CSV", data=csv, file_name="venues_export.csv", mime="text/csv")
+
+st.markdown("---")
+if st.button("下一步：物资需求 ➡️", type="primary", use_container_width=True):
+    st.switch_page("pages/3_物资需求.py")

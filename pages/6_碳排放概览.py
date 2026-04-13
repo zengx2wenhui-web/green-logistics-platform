@@ -190,3 +190,7 @@ except Exception:
 
 st.markdown("---")
 st.caption(f"数据来源：第五步路径优化结果 | 计算时间：{results.get('timestamp', '未知')}")
+
+st.markdown("---")
+if st.button("下一步：碳排放分析 ➡️", type="primary", use_container_width=True):
+    st.switch_page("pages/7_碳排放分析.py")

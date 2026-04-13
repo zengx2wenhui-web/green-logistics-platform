@@ -263,6 +263,8 @@ def main():
 
     # 页脚
     st.markdown("---")
+    if st.button("下一步：仓库设置 ➡️", type="primary", use_container_width=True):
+        st.switch_page("pages/1_仓库设置.py")
     st.caption(" 2024 赛事碳足迹优化平台 | 十五运会绿色物流解决方案")
 
 

@@ -159,3 +159,7 @@ with col3:
     st.write("")
 
 st.caption(" 提示：总仓库是VRP路径优化的起点，所有配送路线将从这里出发")
+
+st.markdown("---")
+if st.button("下一步：场馆录入 ➡️", type="primary", use_container_width=True):
+    st.switch_page("pages/2_场馆录入.py")

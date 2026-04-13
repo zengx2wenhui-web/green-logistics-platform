@@ -238,7 +238,7 @@ def evaluate_clustering(
             silhouette = -1.0
             if len(set(labels)) > 1:
                 silhouette = silhouette_score(
-                    coords_array, labels, sample_weight=weights_array
+                    coords_array, labels
                 )
 
             results[k] = {
