@@ -264,7 +264,7 @@ with tab1:
         df,
         disabled=["场馆名称"],
         num_rows="fixed",
-        use_container_width=True,
+        width="stretch",
         column_config={col: st.column_config.NumberColumn(min_value=0, step=10, default=0) for col in WEIGHT_COLS},
     )
     edited_df["总需求(kg)"] = edited_df[WEIGHT_COLS].sum(axis=1)
@@ -282,7 +282,7 @@ with tab1:
     st.markdown("---")
 
     # 保存按钮
-    if st.button(" 保存物资需求", type="primary", use_container_width=True):
+    if st.button(" 保存物资需求", type="primary", width="stretch"):
         st.session_state["demands_df"] = edited_df.copy()
 
         # 同步保存 demands 字典
@@ -317,7 +317,7 @@ with tab1:
         st.success(f" 已保存 {len(demands)} 个场馆的物资需求，总量 {edited_df['总需求(kg)'].sum():,.0f} kg")
 
     with st.expander(" 预览完整数据"):
-        st.dataframe(edited_df, hide_index=True, use_container_width=True)
+        st.dataframe(edited_df, hide_index=True, width="stretch")
 
 # ========== 上传文件（智能导入） ==========
 with tab2:
@@ -343,7 +343,7 @@ with tab2:
             st.success(f" 成功读取 {len(df_upload)} 条数据（已自动定位表头）")
 
             with st.expander(" 查看原始读取数据", expanded=False):
-                st.dataframe(df_upload, use_container_width=True)
+                st.dataframe(df_upload, width="stretch")
 
             # 智能清洗 & 单位换算
             df_cleaned = _process_material_upload(df_upload.copy())
@@ -356,7 +356,7 @@ with tab2:
                     f"已识别 **{len(df_cleaned)}** 个场馆，自动排除合计/总计行，"
                     f"所有数值已统一换算为 **kg**。"
                 )
-                st.dataframe(df_cleaned, hide_index=True, use_container_width=True)
+                st.dataframe(df_cleaned, hide_index=True, width="stretch")
 
                 total_kg = df_cleaned["总需求(kg)"].sum()
                 col_s1, col_s2 = st.columns(2)
@@ -365,7 +365,7 @@ with tab2:
                 with col_s2:
                     st.metric("重算总需求", f"{total_kg:,.2f} kg")
 
-                if st.button(" 确认并合并到需求表", type="primary", use_container_width=True):
+                if st.button(" 确认并合并到需求表", type="primary", width="stretch"):
                     # 合并到 demands 字典
                     for _, row in df_cleaned.iterrows():
                         venue_name = str(row["场馆名称"]).strip()
@@ -408,13 +408,13 @@ if st.session_state.get("demands") and len(st.session_state["demands"]) > 0:
         st.metric("场均需求", f"{avg:,.0f} kg")
 
     summary_list = [{"场馆": k, "总需求(kg)": v.get("总需求", 0) if isinstance(v, dict) else v} for k, v in demands.items()]
-    st.dataframe(pd.DataFrame(summary_list), hide_index=True, use_container_width=True)
+    st.dataframe(pd.DataFrame(summary_list), hide_index=True, width="stretch")
     st.success(" 数据已同步，可供路径优化页面使用")
 else:
     st.warning(" 暂无物资需求数据")
 
 st.markdown("---")
-if st.button("下一步：车辆配置 ➡️", type="primary", use_container_width=True):
+if st.button("下一步：车辆配置 ➡️", type="primary", width="stretch"):
     st.switch_page("pages/4_车辆配置.py")
 
 st.caption(" 提示：物资需求数据将用于VRP路径优化中的车辆调度计算")

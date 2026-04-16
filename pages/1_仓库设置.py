@@ -63,9 +63,9 @@ with col1:
 
     col_btn1, col_btn2 = st.columns(2)
     with col_btn1:
-        geocode_btn = st.button(" 获取坐标", type="primary", use_container_width=True)
+        geocode_btn = st.button(" 获取坐标", type="primary", width="stretch")
     with col_btn2:
-        save_btn = st.button(" 保存仓库", use_container_width=True)
+        save_btn = st.button(" 保存仓库", width="stretch")
 
     # 执行地理编码
     if geocode_btn and warehouse_address:
@@ -146,14 +146,14 @@ st.markdown("---")
 st.subheader("快捷操作")
 col1, col2, col3 = st.columns(3)
 with col1:
-    if st.button(" 清除仓库数据", use_container_width=True):
+    if st.button(" 清除仓库数据", width="stretch"):
         st.session_state.warehouse = {
             "name": "", "address": "", "lng": None, "lat": None,
             "capacity_kg": 0, "capacity_m3": 0
         }
         st.rerun()
 with col2:
-    if st.button(" 导出仓库信息", use_container_width=True):
+    if st.button(" 导出仓库信息", width="stretch"):
         st.json(st.session_state.warehouse)
 with col3:
     st.write("")
@@ -161,5 +161,5 @@ with col3:
 st.caption(" 提示：总仓库是VRP路径优化的起点，所有配送路线将从这里出发")
 
 st.markdown("---")
-if st.button("下一步：场馆录入 ➡️", type="primary", use_container_width=True):
+if st.button("下一步：场馆录入 ➡️", type="primary", width="stretch"):
     st.switch_page("pages/2_场馆录入.py")

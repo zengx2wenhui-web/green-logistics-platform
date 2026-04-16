@@ -135,7 +135,7 @@ def main():
 
         # 快速操作
         st.markdown("###  快速操作")
-        if st.button(" 重置所有数据", use_container_width=True):
+        if st.button(" 重置所有数据", width="stretch"):
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
@@ -263,7 +263,7 @@ def main():
 
     # 页脚
     st.markdown("---")
-    if st.button("下一步：仓库设置 ➡️", type="primary", use_container_width=True):
+    if st.button("下一步：仓库设置 ➡️", type="primary", width="stretch"):
         st.switch_page("pages/1_仓库设置.py")
     st.caption(" 2024 赛事碳足迹优化平台 | 十五运会绿色物流解决方案")
 

@@ -92,7 +92,7 @@ st.markdown("---")
 # ===================== 开始优化 =====================
 st.markdown("###  执行优化计算")
 
-if st.button(" 开始优化计算", type="primary", use_container_width=True):
+if st.button(" 开始优化计算", type="primary", width="stretch"):
     progress_bar = st.progress(0)
     status_text = st.empty()
 
@@ -219,7 +219,7 @@ if st.button(" 开始优化计算", type="primary", use_container_width=True):
                         })
 
                     st.markdown("** 中转仓选址结果：**")
-                    st.dataframe(pd.DataFrame(depot_results), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame(depot_results), width="stretch", hide_index=True)
 
             except Exception as e:
                 st.warning(f"K-Means选址异常: {e}，将直接从仓库配送")
@@ -448,7 +448,7 @@ if res and isinstance(res, dict) and res.get("route_results"):
     # 中转仓选址结果表格
     if depot_results_list:
         st.subheader(" 中转仓选址结果")
-        st.dataframe(pd.DataFrame(depot_results_list), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(depot_results_list), width="stretch", hide_index=True)
 
     # Tab 展示
     tab_map, tab_table, tab_carbon = st.tabs([" 路线地图", " 车辆调度详情", " 碳排放对比"])
@@ -547,7 +547,7 @@ if res and isinstance(res, dict) and res.get("route_results"):
                             if col != "场馆":
                                 total_row[col] = detail_df[col].sum()
                         detail_df = pd.concat([detail_df, pd.DataFrame([total_row])], ignore_index=True)
-                    st.dataframe(detail_df, use_container_width=True, hide_index=True)
+                    st.dataframe(detail_df, width="stretch", hide_index=True)
 
                 st.divider()
                 col1, col2, col3 = st.columns(3)
@@ -569,7 +569,7 @@ if res and isinstance(res, dict) and res.get("route_results"):
             "访问场馆数": len(rr["visits"]), "装载量(kg)": rr["total_load_kg"],
             "距离(km)": rr["total_distance_km"], "碳排放(kg CO₂)": rr["total_carbon_kg"],
         } for rr in route_results_list]
-        st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(summary_rows), hide_index=True, width="stretch")
 
     # ===== 碳排放对比 =====
     with tab_carbon:
@@ -596,7 +596,7 @@ if res and isinstance(res, dict) and res.get("route_results"):
         fig_bar = px.bar(df_carbon, x="方案", y="碳排放(kg CO₂)", color="方案",
                          title="碳排放对比", text_auto=True)
         fig_bar.update_layout(showlegend=False)
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, width="stretch")
 
         # 等效种树（12 kg CO₂/棵年）
         tree_eq = reduction / 12.0
@@ -606,5 +606,5 @@ elif not res:
     st.info(" 完成参数设置后，点击「 开始优化计算」按钮")
 
 st.markdown("---")
-if st.button("下一步：碳排放概览 ➡️", type="primary", use_container_width=True):
+if st.button("下一步：碳排放概览 ➡️", type="primary", width="stretch"):
     st.switch_page("pages/6_碳排放概览.py")

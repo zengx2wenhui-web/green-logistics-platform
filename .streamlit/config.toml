@@ -1,23 +1,15 @@
 # Streamlit 配置文件
 # 文档: https://docs.streamlit.io/library/api-reference/configuration/config.toml
 
-[general]
-# 应用名称（显示在浏览器标签）
-app_name = "赛事碳足迹优化平台"
-# 电子邮件地址（可选）
-email = "support@example.com"
-
 [browser]
-# 不自动打开浏览器（服务器模式）
-gather_usage_stats = true
+# 是否收集使用统计信息 (修正为驼峰命名)
+gatherUsageStats = false
 
 [server]
 # 启动端口
 port = 8501
-# 启用CORS（如果需要从其他域名访问）
-enable_cors = false
-# 启用WebSocket压缩
-websocket_compression = "auto"
+# 启用CORS (修正为驼峰命名)
+enableCORS = true
 # 最大上传文件大小 (MB)
 maxUploadSize = 200
 
@@ -37,8 +29,3 @@ toolbarMode = "minimal"
 # 运行器配置
 magicEnabled = true
 fastReruns = true
-maxCachedMessageAge = 2
-
-[mapplot]
-# 地图配置
-mapboxToken = ""  # 如需使用Mapbox，填入Token

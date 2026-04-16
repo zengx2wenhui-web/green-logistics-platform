@@ -78,7 +78,7 @@ info_data = {
     "计算时间": results.get("timestamp", "未知"),
 }
 df_info = pd.DataFrame(list(info_data.items()), columns=["配置项", "值"])
-st.dataframe(df_info, use_container_width=True, hide_index=True)
+st.dataframe(df_info, width="stretch", hide_index=True)
 
 st.markdown("---")
 
@@ -88,7 +88,7 @@ if depot_results:
     st.info(f"共设置 **{len(depot_results)}** 个中转仓")
 
     df_depot = pd.DataFrame(depot_results)
-    st.dataframe(df_depot, use_container_width=True, hide_index=True)
+    st.dataframe(df_depot, width="stretch", hide_index=True)
 
     # 中转仓地图
     with st.expander(" 中转仓位置地图", expanded=True):
@@ -227,7 +227,7 @@ with tab_schedule:
                         if col != "场馆":
                             total_row[col] = df_detail[col].sum()
                     df_detail = pd.concat([df_detail, pd.DataFrame([total_row])], ignore_index=True)
-                st.dataframe(df_detail, use_container_width=True, hide_index=True)
+                st.dataframe(df_detail, width="stretch", hide_index=True)
 
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -251,7 +251,7 @@ with tab_schedule:
         "距离(km)": rr["total_distance_km"],
         "碳排放(kg CO₂)": rr["total_carbon_kg"],
     } for rr in route_results]
-    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(summary_rows), width="stretch", hide_index=True)
 
 # ===== Tab 3: 碳排放汇总 =====
 with tab_carbon:
@@ -277,7 +277,7 @@ with tab_carbon:
                  title="碳排放对比", text_auto=True,
                  color_discrete_sequence=["#EF553B", "#00CC96"])
     fig.update_layout(showlegend=False, height=400)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # 碳等效
     st.markdown("####  碳排放等效换算")
@@ -383,5 +383,5 @@ st.caption(f"优化结果 | 计算时间：{results.get('timestamp', '未知')} 
            f"树等效标准：12 kg CO₂/棵年")
 
 st.markdown("---")
-if st.button("返回首页 🏠", type="primary", use_container_width=True):
+if st.button("返回首页 🏠", type="primary", width="stretch"):
     st.switch_page("app.py")

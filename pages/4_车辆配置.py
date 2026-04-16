@@ -41,7 +41,7 @@ table_data = [
     }
     for v in vehicle_types
 ]
-st.dataframe(pd.DataFrame(table_data), hide_index=True, use_container_width=True)
+st.dataframe(pd.DataFrame(table_data), hide_index=True, width="stretch")
 st.markdown("---")
 
 # ===================== 车辆参数配置 =====================
@@ -125,16 +125,16 @@ if vehicle_configs:
         }
         for cfg in vehicle_configs.values()
     ]
-    st.dataframe(pd.DataFrame(detail_data), hide_index=True, use_container_width=True)
+    st.dataframe(pd.DataFrame(detail_data), hide_index=True, width="stretch")
 
 st.markdown("---")
 
-if st.button(" 保存配置", type="primary", use_container_width=True):
+if st.button(" 保存配置", type="primary", width="stretch"):
     st.session_state.vehicles = list(vehicle_configs.values())
     st.success(f"已保存 {len(vehicle_configs)} 种车型，共 {total_vehicles} 辆车")
 
 st.caption(" 提示：车型参数来源于 data/vehicle_types.json，碳因子单位为 kg CO₂/吨km")
 
 st.markdown("---")
-if st.button("下一步：路径优化 ➡️", type="primary", use_container_width=True):
+if st.button("下一步：路径优化 ➡️", type="primary", width="stretch"):
     st.switch_page("pages/5_路径优化.py")

@@ -59,9 +59,9 @@ with tab1:
 
     col_btn1, col_btn2 = st.columns(2)
     with col_btn1:
-        process_btn = st.button(" 开始批量处理", type="primary", use_container_width=True)
+        process_btn = st.button(" 开始批量处理", type="primary", width="stretch")
     with col_btn2:
-        if st.button(" 清空场馆", use_container_width=True):
+        if st.button(" 清空场馆", width="stretch"):
             st.session_state.venues = []
             st.session_state.demands = {}
             st.rerun()
@@ -85,7 +85,7 @@ with tab1:
 
             if df is not None and len(df) > 0:
                 st.success(f" 成功读取 {len(df)} 条数据")
-                st.dataframe(df, use_container_width=True)
+                st.dataframe(df, width="stretch")
 
                 # 智能列名匹配
                 columns = df.columns.tolist()
@@ -189,7 +189,7 @@ with tab2:
             placeholder="不填则只保存场馆信息"
         )
 
-        submitted = st.form_submit_button(" 添加场馆", type="primary", use_container_width=True)
+        submitted = st.form_submit_button(" 添加场馆", type="primary", width="stretch")
 
         if submitted:
             if not name or not address:
@@ -232,7 +232,7 @@ with tab2:
     cols = st.columns(len(preset_venues))
     for idx, (col, preset) in enumerate(zip(cols, preset_venues)):
         with col:
-            if st.button(f" {preset['name']}", use_container_width=True):
+            if st.button(f" {preset['name']}", width="stretch"):
                 demand = preset["capacity"] * 0.05
                 st.session_state.venues.append({
                     "id": len(st.session_state.venues) + 1,
@@ -269,7 +269,7 @@ if st.session_state.venues:
 
     col_l1, col_l2 = st.columns([3, 1])
     with col_l1:
-        st.dataframe(df_venues, hide_index=True, use_container_width=True)
+        st.dataframe(df_venues, hide_index=True, width="stretch")
     with col_l2:
         total_demand = sum(v.get("demand_kg", 0) for v in st.session_state.venues)
         geo_count = sum(1 for v in st.session_state.venues if v.get("geocoded"))
@@ -352,7 +352,7 @@ else:
 st.markdown("---")
 
 # 导出功能
-if st.button(" 导出场馆CSV", use_container_width=True) and st.session_state.venues:
+if st.button(" 导出场馆CSV", width="stretch") and st.session_state.venues:
     df_export = pd.DataFrame([{
         "名称": v["name"], "地址": v["address"], "类型": v["type"],
         "容量": v["capacity"], "日均需求量(kg)": v["demand_kg"],
@@ -363,5 +363,5 @@ if st.button(" 导出场馆CSV", use_container_width=True) and st.session_state.
     st.download_button("下载CSV", data=csv, file_name="venues_export.csv", mime="text/csv")
 
 st.markdown("---")
-if st.button("下一步：物资需求 ➡️", type="primary", use_container_width=True):
+if st.button("下一步：物资需求 ➡️", type="primary", width="stretch"):
     st.switch_page("pages/3_物资需求.py")

@@ -80,7 +80,7 @@ with col1:
         text_auto=".3f",
     )
     fig_ef.update_layout(height=400)
-    st.plotly_chart(fig_ef, use_container_width=True)
+    st.plotly_chart(fig_ef, width="stretch")
 
 with col2:
     st.dataframe(df_vt[["车型名称", "碳因子(kg CO₂/吨km)", "碳排放等级"]], hide_index=True)
@@ -138,11 +138,11 @@ fig_sim.add_hline(y=df_sim["基线碳排放(kg CO₂)"].max(),
                   line_dash="dash", line_color="red",
                   annotation_text="基线碳排放（柴油单独配送）")
 fig_sim.update_layout(height=450)
-st.plotly_chart(fig_sim, use_container_width=True)
+st.plotly_chart(fig_sim, width="stretch")
 
 # 详细数据表
 with st.expander(" 详细模拟数据"):
-    st.dataframe(df_sim, use_container_width=True, hide_index=True)
+    st.dataframe(df_sim, width="stretch", hide_index=True)
 
 st.markdown("---")
 
@@ -162,7 +162,7 @@ fig_radar.update_layout(
     title="各车型减排比例雷达图",
     height=400,
 )
-st.plotly_chart(fig_radar, use_container_width=True)
+st.plotly_chart(fig_radar, width="stretch")
 
 st.markdown("---")
 
@@ -222,11 +222,11 @@ df_sens = pd.DataFrame(sensitivity_data)
 fig_sens = px.line(df_sens, x="距离(km)", y="碳排放(kg CO₂)", color="车型",
                    title="碳排放敏感性分析（距离变化）", markers=True)
 fig_sens.update_layout(height=400)
-st.plotly_chart(fig_sens, use_container_width=True)
+st.plotly_chart(fig_sens, width="stretch")
 
 st.markdown("---")
 st.caption(f"分析基于第五步优化结果 | 计算时间：{results.get('timestamp', '未知')}")
 
 st.markdown("---")
-if st.button("下一步：优化结果 ➡️", type="primary", use_container_width=True):
+if st.button("下一步：优化结果 ➡️", type="primary", width="stretch"):
     st.switch_page("pages/8_优化结果.py")

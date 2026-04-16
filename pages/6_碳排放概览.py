@@ -89,7 +89,7 @@ with col_left:
                      title="碳排放对比", text_auto=".2f",
                      color_discrete_sequence=["#EF553B", "#00CC96"])
     fig_bar.update_layout(showlegend=False, height=400)
-    st.plotly_chart(fig_bar, use_container_width=True)
+    st.plotly_chart(fig_bar, width="stretch")
 
 with col_right:
     fig_gauge = go.Figure(go.Indicator(
@@ -113,7 +113,7 @@ with col_right:
         },
     ))
     fig_gauge.update_layout(height=400)
-    st.plotly_chart(fig_gauge, use_container_width=True)
+    st.plotly_chart(fig_gauge, width="stretch")
 
 st.markdown("---")
 
@@ -138,10 +138,10 @@ with col_pie:
                      color_discrete_sequence=px.colors.qualitative.Set3)
     fig_pie.update_traces(textposition="inside", textinfo="percent+label")
     fig_pie.update_layout(height=400)
-    st.plotly_chart(fig_pie, use_container_width=True)
+    st.plotly_chart(fig_pie, width="stretch")
 
 with col_table:
-    st.dataframe(df_vehicles, use_container_width=True, hide_index=True)
+    st.dataframe(df_vehicles, width="stretch", hide_index=True)
 
 st.markdown("---")
 
@@ -160,7 +160,7 @@ df_vehicles = pd.DataFrame(vehicle_data)
 fig_eff = px.bar(df_vehicles, x="车辆", y=["碳效率(g CO₂/km)", "碳效率(g CO₂/kg货物)"],
                  barmode="group", title="车辆碳排放效率对比")
 fig_eff.update_layout(height=400, yaxis_title="碳效率")
-st.plotly_chart(fig_eff, use_container_width=True)
+st.plotly_chart(fig_eff, width="stretch")
 
 # ===================== 优化建议 =====================
 st.markdown("###  优化建议")
@@ -192,5 +192,5 @@ st.markdown("---")
 st.caption(f"数据来源：第五步路径优化结果 | 计算时间：{results.get('timestamp', '未知')}")
 
 st.markdown("---")
-if st.button("下一步：碳排放分析 ➡️", type="primary", use_container_width=True):
+if st.button("下一步：碳排放分析 ➡️", type="primary", width="stretch"):
     st.switch_page("pages/7_碳排放分析.py")
