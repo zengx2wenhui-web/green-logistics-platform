@@ -1,20 +1,36 @@
-﻿"""优化结果页面 - 最终结果展示与导出
-
-修复：
-- 中转仓选址结果完整展示（坐标、地址、服务场馆）
-- 树等效修正为12 kg CO2/棵年
-- 碳等效计算使用 utils/carbon_calc.py
-"""
+﻿"""优化结果页面 - 最终结果展示与导出"""
 import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
 import json
 
+from utils.vehicle_lib import VEHICLE_LIB
+
 st.set_page_config(page_title="优化结果", page_icon="", layout="wide")
 st.title(" 第八步：优化结果汇总")
 st.markdown("物流优化最终结果展示 + 方案导出")
 
+# 动力类型映射
+POWER_TYPE_MAPPING = {
+    "diesel": "柴油重卡",
+    "lng": "LNG天然气重卡",
+    "hev": "混合动力 (HEV)",
+    "phev": "插电混动 (PHEV)",
+    "bev": "纯电动 (BEV)",
+    "fcev": "氢燃料电池 (FCEV)",
+}
+
+def translate_vehicle_type(vtype: str) -> str:
+    """将底层变量名翻译为优美的中文"""
+    if not vtype:
+        return ""
+    clean_vtype = str(vtype).split('_')[0].lower()
+    return POWER_TYPE_MAPPING.get(clean_vtype, vtype)
+
+def format_route_with_arrows(stops, start_label="总仓库", end_label="总仓库") -> str:
+    route_points = [start_label] + list(stops) + [end_label]
+    return " → ".join(route_points)
 
 # ===================== 读取结果 =====================
 results = st.session_state.get("optimization_results") or st.session_state.get("results")
@@ -68,17 +84,32 @@ st.markdown("---")
 # ===================== 优化方案信息 =====================
 st.markdown("###  优化方案信息")
 
+fleet_used_by_type = results.get("fleet_used_by_type", {}) or {}
+fleet_max_by_type = results.get("fleet_max_by_type", {}) or {}
+
 info_data = {
     "优化算法": results.get("optimization_method", "未知"),
     "距离计算方法": results.get("distance_method", "未知"),
     "选址方法": results.get("clustering_method", "未知"),
-    "使用车型": results.get("vehicle_type", "未知"),
-    "车辆载重": f"{results.get('vehicle_capacity_kg', 0):,} kg",
-    "碳因子": f"{results.get('emission_factor', 0)} kg CO₂/吨km",
     "计算时间": results.get("timestamp", "未知"),
 }
 df_info = pd.DataFrame(list(info_data.items()), columns=["配置项", "值"])
 st.dataframe(df_info, width="stretch", hide_index=True)
+
+if fleet_used_by_type or fleet_max_by_type:
+    st.markdown("####  车队派车组成（实际 / 上限）")
+    all_types = sorted(set(list(fleet_max_by_type.keys()) + list(fleet_used_by_type.keys())))
+    rows = []
+    for vtype in all_types:
+        used = int(fleet_used_by_type.get(vtype, 0) or 0)
+        cap = int(fleet_max_by_type.get(vtype, 0) or 0)
+        rows.append({
+            "动力类型": POWER_TYPE_MAPPING.get(vtype, vtype),
+            "实际派车数": used,
+            "可用上限": cap,
+            "闲置车辆数": max(cap - used, 0),
+        })
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 st.markdown("---")
 
@@ -201,37 +232,45 @@ with tab_map:
 with tab_schedule:
     st.subheader(" 车辆调度明细")
     for rr in route_results:
-        label = f" {rr['vehicle_name']}（{rr['vehicle_type']}）"
+        label = f" {rr['vehicle_name']}（{translate_vehicle_type(rr['vehicle_type'])}）"
         with st.expander(label, expanded=True):
-            route_str = "  ".join(["总仓库"] + rr.get("visits", []) + ["总仓库"])
+            route_str = format_route_with_arrows(rr.get("visits", []), start_label="总仓库", end_label="总仓库")
             st.markdown(f"**路线：** {route_str}")
 
             load_details = rr.get("load_details", [])
             if load_details:
+                # 动态列：优先使用 optimization result 中保存的物资列顺序，其次使用 session_state
+                material_columns = results.get("material_columns") or st.session_state.get("material_columns") or ["通用赛事物资", "专项运动器材", "医疗物资", "IT设备"]
+                expected_columns = ["场馆"] + [f"{c}(kg)" for c in material_columns] + ["小计(kg)"]
+
                 rows = []
                 for stop in load_details:
-                    row = {
-                        "场馆": stop.get("venue", ""),
-                        "通用赛事物资(kg)": stop.get("general_materials_kg", 0),
-                        "专项运动器材(kg)": stop.get("sports_equipment_kg", 0),
-                        "医疗物资(kg)": stop.get("medical_materials_kg", 0),
-                        "IT设备(kg)": stop.get("it_equipment_kg", 0),
-                    }
-                    row["小计(kg)"] = sum(v for k, v in row.items() if k != "场馆")
+                    row = {"场馆": stop.get("venue", "")}
+                    for c in material_columns:
+                        row[f"{c}(kg)"] = float(stop.get(c, 0) or 0)
+                    row["小计(kg)"] = sum(row[f"{c}(kg)"] for c in material_columns)
                     rows.append(row)
 
                 df_detail = pd.DataFrame(rows)
+                # 强制列顺序并填补缺失
+                if df_detail.empty:
+                    df_detail = pd.DataFrame(columns=expected_columns)
+                else:
+                    for col in expected_columns:
+                        if col not in df_detail.columns:
+                            df_detail[col] = 0
+                    df_detail = df_detail[expected_columns]
+
+                # 添加合计行
                 if not df_detail.empty:
-                    total_row = {"场馆": "合计"}
-                    for col in df_detail.columns:
-                        if col != "场馆":
-                            total_row[col] = df_detail[col].sum()
+                    total_row = {col: (df_detail[col].sum() if col != "场馆" else "合计") for col in expected_columns}
                     df_detail = pd.concat([df_detail, pd.DataFrame([total_row])], ignore_index=True)
-                st.dataframe(df_detail, width="stretch", hide_index=True)
+
+                st.dataframe(df_detail.fillna(0), width="stretch", hide_index=True)
 
             col1, col2, col3 = st.columns(3)
             with col1:
-                cap = results.get("vehicle_capacity_kg", 15000)
+                cap = rr.get("vehicle_capacity_kg", results.get("vehicle_capacity_kg", 15000))
                 load = rr.get("total_load_kg", 0)
                 util = (load / cap * 100) if cap > 0 else 0
                 st.metric("装载量", f"{load:.0f} kg", delta=f"利用率 {util:.0f}%")
@@ -244,12 +283,13 @@ with tab_schedule:
     st.markdown("---")
     st.subheader(" 汇总表")
     summary_rows = [{
-        "车辆": rr["vehicle_name"], "车型": rr["vehicle_type"],
-        "路线": "  ".join(["仓库"] + rr.get("visits", []) + ["仓库"]),
-        "场馆数": len(rr.get("visits", [])),
-        "装载量(kg)": rr["total_load_kg"],
-        "距离(km)": rr["total_distance_km"],
-        "碳排放(kg CO₂)": rr["total_carbon_kg"],
+        "指令编号": rr["vehicle_name"], 
+        "派发车型": translate_vehicle_type(rr["vehicle_type"]),
+        "规划路径": format_route_with_arrows(rr.get("visits", [])),
+        "作业网点数": len(rr.get("visits", [])),
+        "装载负荷(kg)": rr["total_load_kg"],
+        "行车距离(km)": rr["total_distance_km"],
+        "单车碳排(kg CO₂)": rr["total_carbon_kg"],
     } for rr in route_results]
     st.dataframe(pd.DataFrame(summary_rows), width="stretch", hide_index=True)
 
@@ -270,7 +310,7 @@ with tab_carbon:
 
     # 碳对比柱状图
     df_carbon = pd.DataFrame({
-        "方案": ["基线方案（单独配送）", "优化方案（VRP调度）"],
+        "方案": ["基线方案（单独配送）", "优化方案（FSMVRP调度）"],
         "碳排放(kg CO₂)": [baseline_emission, total_emission],
     })
     fig = px.bar(df_carbon, x="方案", y="碳排放(kg CO₂)", color="方案",
@@ -302,10 +342,10 @@ with tab_export:
         st.markdown("** 车辆调度表**")
         csv_rows = []
         for rr in route_results:
-            route_str = "总仓库  " + "  ".join(rr.get("visits", [])) + "  总仓库"
+            route_str = format_route_with_arrows(rr.get("visits", []), start_label="总仓库", end_label="总仓库")
             csv_rows.append({
                 "车辆编号": rr["vehicle_name"],
-                "车型": rr["vehicle_type"],
+                "车型": translate_vehicle_type(rr["vehicle_type"]),
                 "路线": route_str,
                 "访问场馆数": len(rr.get("visits", [])),
                 "装载量(kg)": rr["total_load_kg"],
@@ -366,7 +406,8 @@ with tab_export:
         "reduction_percent": reduction_pct,
         "total_distance_km": total_distance,
         "num_vehicles": num_vehicles,
-        "vehicle_type": results.get("vehicle_type", ""),
+        "fleet_used_by_type": fleet_used_by_type,
+        "fleet_max_by_type": fleet_max_by_type,
         "optimization_method": results.get("optimization_method", ""),
         "timestamp": results.get("timestamp", ""),
         "depot_count": len(depot_results),

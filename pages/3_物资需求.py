@@ -3,20 +3,23 @@ import re
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from utils.file_reader import read_uploaded_file
+from utils.file_reader import read_uploaded_file, normalize_name
 
 st.set_page_config(page_title="物资需求", page_icon="")
 
 st.title(" 第三步：物资需求录入")
-st.markdown("为各场馆录入物资配送需求，数据将用于VRP路径优化")
+st.markdown("为各场馆录入物资配送需求，数据将用于车队优化调度计算（FSMVRP）")
 
 # ===== 初始化 =====
 if "demands_df" not in st.session_state:
     st.session_state["demands_df"] = None
 if "demands" not in st.session_state:
     st.session_state["demands"] = {}
-
 WEIGHT_COLS = ["通用赛事物资(kg)", "专项运动器材(kg)", "医疗物资(kg)", "IT设备(kg)"]
+
+# 默认物资列顺序（去掉单位后缀）
+if "material_columns" not in st.session_state:
+    st.session_state["material_columns"] = [c.replace("(kg)", "").strip() for c in WEIGHT_COLS]
 
 # ===================== 智能单位换算函数 =====================
 # 排除列关键词（合计/总计/Total 等）
@@ -150,14 +153,16 @@ def _smart_read_excel(uploaded_file) -> tuple:
     return df, None
 
 
-def _process_material_upload(df_raw: pd.DataFrame) -> pd.DataFrame:
-    """对上传的 DataFrame 执行智能清洗：
+def _process_material_upload(df_raw: pd.DataFrame) -> tuple:
+    """对上传的 DataFrame 执行智能清洗：动态识别物资列。
 
     1. 锁定「场馆名称」列
-    2. 提取物资分项列（排除序号/备注/合计）
-    3. 遍历分项列做单位换算 → kg
-    4. 按行重新求和得到「总需求(kg)」
-    5. 输出精简三列：序号、场馆名称、总需求(kg)
+    2. 动态识别物资分项列（排除非物资列）
+    3. 遍历物资列做单位换算 → kg
+    4. 按行求和得到「总需求(kg)」
+    5. 输出精简三列：序号、场馆名称、总需求(kg) + 物资分项列
+
+    返回 (DataFrame, material_columns)
     """
     # 定位场馆名称列
     venue_col = None
@@ -173,19 +178,36 @@ def _process_material_upload(df_raw: pd.DataFrame) -> pd.DataFrame:
                 venue_col = col
                 break
     if venue_col is None:
-        return pd.DataFrame(columns=["序号", "场馆名称", "总需求(kg)"])
+        return pd.DataFrame(columns=["序号", "场馆名称", "总需求(kg)"]), []
 
-    # 提取物资分项列
-    material_cols = [c for c in df_raw.columns if c != venue_col and _is_material_col(c)]
+    # 动态识别物资分项列（排除非物资列）
+    non_material_keywords = {
+        "序号", "备注", "编号", "no", "remark", "note", "index",
+        "场馆名称", "场馆名", "场馆", "名称", "venue", "venue_name", "name",
+        "地址", "详细地址", "address", "场馆地址", "addr", "位置",
+        "承办项目", "项目", "运动项目", "sport", "project", "event",
+        "经度", "lng", "longitude", "lon", "x",
+        "纬度", "lat", "latitude", "y",
+        "需求量", "需求", "需求量_kg", "demand", "weight", "重量", "weight_kg",
+        "合计", "总计", "总需求", "total", "小计", "subtotal", "sum",
+    }
 
+    material_cols = []
+    for col in df_raw.columns:
+        if col == venue_col:
+            continue
+        col_lower = str(col).strip().lower()
+        is_non_material = any(kw in col_lower for kw in non_material_keywords)
+        if not is_non_material:
+            material_cols.append(col)
+
+    # 如果没有识别到物资列，尝试把所有数值列当作物资列
     if not material_cols:
-        # 如果没有识别到物资列，尝试把所有数值列当作物资列
-        for c in df_raw.columns:
-            if c == venue_col:
+        for col in df_raw.columns:
+            if col == venue_col:
                 continue
-            if pd.to_numeric(df_raw[c], errors="coerce").notna().any():
-                if _is_material_col(c):
-                    material_cols.append(c)
+            if pd.to_numeric(df_raw[col], errors="coerce").notna().any():
+                material_cols.append(col)
 
     # 对物资分项列做单位换算
     for col in material_cols:
@@ -200,13 +222,20 @@ def _process_material_upload(df_raw: pd.DataFrame) -> pd.DataFrame:
     df_raw = df_raw[df_raw[venue_col].astype(str).str.lower() != "nan"]
     df_raw = df_raw.reset_index(drop=True)
 
-    # 构建精简输出
+    # 构建包含每类物资的输出（保留顺序），列名以 "类别(kg)" 形式返回
+    base_names = [str(c).strip() for c in material_cols]
+    material_data = {}
+    for i, col in enumerate(material_cols):
+        display_col = f"{base_names[i]}(kg)"
+        material_data[display_col] = df_raw[col].round(2).values
+
     result = pd.DataFrame({
         "序号": range(1, len(df_raw) + 1),
         "场馆名称": df_raw[venue_col].astype(str).str.strip().values,
+        **material_data,
         "总需求(kg)": df_raw["总需求(kg)"].round(2).values,
     })
-    return result
+    return result, base_names
 
 # ===== 检查场馆数据 =====
 venue_names = []
@@ -284,23 +313,20 @@ with tab1:
     # 保存按钮
     if st.button(" 保存物资需求", type="primary", width="stretch"):
         st.session_state["demands_df"] = edited_df.copy()
-
-        # 同步保存 demands 字典
-        demands = {}
+        # 同步保存 demands 字典（使用规范化键）
+        demands_norm = {}
+        base_names = [c.replace("(kg)", "").strip() for c in WEIGHT_COLS]
         for _, row in edited_df.iterrows():
-            venue = row["场馆名称"]
-            general = float(row.get("通用赛事物资(kg)", 0) or 0)
-            sports = float(row.get("专项运动器材(kg)", 0) or 0)
-            medical = float(row.get("医疗物资(kg)", 0) or 0)
-            it_equip = float(row.get("IT设备(kg)", 0) or 0)
-            demands[venue] = {
-                "通用赛事物资": general, "专项运动器材": sports,
-                "医疗物资": medical, "IT设备": it_equip,
-                "总需求": general + sports + medical + it_equip,
-            }
-        st.session_state["demands"] = demands
+            venue_display = row["场馆名称"]
+            venue_key = normalize_name(venue_display)
+            values = [float(row.get(col, 0) or 0) for col in WEIGHT_COLS]
+            data = {base_names[i]: values[i] for i in range(len(base_names))}
+            data["总需求"] = sum(values)
+            demands_norm[venue_key] = data
 
-        # 同步 material_demands
+        st.session_state["demands"] = demands_norm
+
+        # 保留 material_demands（用于在线编辑预填，使用展示名作为键）
         st.session_state.material_demands = {}
         for _, row in edited_df.iterrows():
             venue = row["场馆名称"]
@@ -314,7 +340,10 @@ with tab1:
                         "weight_kg": weight, "volume_m3": 0, "urgency": "中",
                     }
 
-        st.success(f" 已保存 {len(demands)} 个场馆的物资需求，总量 {edited_df['总需求(kg)'].sum():,.0f} kg")
+        # 保存物资列顺序（去单位）
+        st.session_state["material_columns"] = base_names
+
+        st.success(f" 已保存 {len(demands_norm)} 个场馆的物资需求，总量 {edited_df['总需求(kg)'].sum():,.0f} kg")
 
     with st.expander(" 预览完整数据"):
         st.dataframe(edited_df, hide_index=True, width="stretch")
@@ -346,14 +375,14 @@ with tab2:
                 st.dataframe(df_upload, width="stretch")
 
             # 智能清洗 & 单位换算
-            df_cleaned = _process_material_upload(df_upload.copy())
+            df_cleaned, material_columns = _process_material_upload(df_upload.copy())
 
             if df_cleaned.empty:
                 st.warning(" 未能从文件中提取到有效的物资需求数据，请检查文件是否包含「场馆名称」列。")
             else:
                 st.markdown("####  智能清洗结果")
                 st.markdown(
-                    f"已识别 **{len(df_cleaned)}** 个场馆，自动排除合计/总计行，"
+                    f"已识别{len(df_cleaned)}个场馆，自动排除合计/总计行，"
                     f"所有数值已统一换算为 **kg**。"
                 )
                 st.dataframe(df_cleaned, hide_index=True, width="stretch")
@@ -366,14 +395,25 @@ with tab2:
                     st.metric("重算总需求", f"{total_kg:,.2f} kg")
 
                 if st.button(" 确认并合并到需求表", type="primary", width="stretch"):
-                    # 合并到 demands 字典
+                    # 合并到 demands 字典（保存为每类物资明细）
+                    # 识别 upload 返回的物资列（形如 '通用赛事物资(kg)'）
+                    # 保存物资列顺序
+                    if material_columns:
+                        st.session_state["material_columns"] = material_columns
+
+                    # 获取物资列的显示名称（带(kg)后缀）
+                    material_cols = [c for c in df_cleaned.columns if c not in ("序号", "场馆名称", "总需求(kg)")]
+
                     for _, row in df_cleaned.iterrows():
-                        venue_name = str(row["场馆名称"]).strip()
-                        total_demand = float(row["总需求(kg)"])
-                        if venue_name:
-                            st.session_state["demands"][venue_name] = {
-                                "总需求": total_demand,
-                            }
+                        venue_display = str(row["场馆名称"]).strip()
+                        venue_key = normalize_name(venue_display)
+                        total_demand = float(row["总需求(kg)"] or 0)
+                        entry = {material_columns[i]: float(row.get(material_cols[i], 0) or 0) for i in range(len(material_columns))}
+                        entry["总需求"] = total_demand
+                        if venue_key:
+                            st.session_state.setdefault("demands", {})
+                            st.session_state["demands"][venue_key] = entry
+
                     st.success(f" 已合并 {len(df_cleaned)} 条记录到需求表！总需求 {total_kg:,.2f} kg")
                     st.rerun()
 
@@ -417,4 +457,4 @@ st.markdown("---")
 if st.button("下一步：车辆配置 ➡️", type="primary", width="stretch"):
     st.switch_page("pages/4_车辆配置.py")
 
-st.caption(" 提示：物资需求数据将用于VRP路径优化中的车辆调度计算")
+st.caption(" 提示：物资需求数据将用于车队优化中的车辆调度计算（FSMVRP）")

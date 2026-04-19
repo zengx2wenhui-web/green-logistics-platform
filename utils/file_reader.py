@@ -1,17 +1,7 @@
-"""文件上传读取模块
-
-底层工具: read_uploaded_file — 纯 I/O 读取，支持 CSV/Excel/JSON/TXT
-业务封装: LogisticsDataProcessor — 四层数据过滤架构
-
-核心优化：
-- 新增文件大小、行数、危险扩展名前置拦截
-- 新增必填列校验与同义词列名映射（别名机制）
-- 新增基础数据清洗（去空行、去首尾空格、数值异常修复）
-- read_uploaded_file 保持纯粹的底层工具职能，不掺杂业务逻辑
-"""
 import io
 import json
 import logging
+import unicodedata
 from typing import Tuple, Optional, Dict, List, Set
 
 import pandas as pd
@@ -279,3 +269,23 @@ class LogisticsDataProcessor:
 
         df = df.reset_index(drop=True)
         return df
+
+
+def normalize_name(name: str) -> str:
+    """标准化场馆/文本名称：NFKC 规范化、全角空格转换、去首尾空格、缩并多重空白。
+
+    保证不同页面对同一场馆名的索引一致。
+    """
+    if name is None:
+        return ""
+    s = str(name)
+    try:
+        s = unicodedata.normalize("NFKC", s)
+    except Exception:
+        pass
+    # 将全角空格替换为半角
+    s = s.replace("\u3000", " ")
+    s = s.strip()
+    # 压缩连续空白为单个空格
+    s = " ".join(s.split())
+    return s

@@ -1,68 +1,50 @@
-"""碳排放计算工具模块
-
-基于绿色物流标准公式 E = d(a,b) × e_f × L(a,b) 进行碳排放核算。
-支持多车型碳因子、区域电网碳强度差异、干线 / 末端分段计算。
-
-核心优化：
-- 废弃 "基准排放 × 惩罚系数" 粗略算法，采用精准乘积公式
-- 车型碳因子直接引用 vehicle_types.json（含全链排放）
-- 树木年吸收量修正为 12 kg CO₂/棵·年（中国林科院参考值）
-- 新增碳排放强度诊断与优化建议输出
-"""
 from typing import Dict, List
 import logging
-
 import pandas as pd
 
-from utils.vehicle_config import load_vehicle_types as _load_raw_vehicle_types
+from utils.vehicle_lib import get_vehicle_params, carbon_per_segment, SEASON_MAP, VEHICLE_LIB
 
 logger = logging.getLogger(__name__)
 
-# ===================== 十五运会专项碳排放因子字典 =====================
-# 单位: kg CO₂/吨·km（全链排放，含间接能耗）
-# 数据来源: vehicle_types.json + IPCC + 中国碳核算数据库
-FIFTEENTH_GAMES_EMISSION_FACTORS: Dict[str, float] = {
-    "diesel_heavy": 0.060,
-    "lng":          0.038,
-    "hev":          0.042,
-    "phev":         0.025,
-    "bev":          0.029,
-    "fcev":         0.069,
-}
+
+# ===================== 全局电网与基准参数 =====================
 
 # 广东电网碳排放强度（kg CO₂/kWh），用于 BEV 间接排放核算
 GUANGDONG_GRID_INTENSITY: float = 0.50
 # 全国平均电网碳排放强度
 NATIONAL_GRID_INTENSITY: float = 0.60
-
 # 碳排放强度阈值（kg CO₂/吨·km），超过即建议优化
 _HIGH_INTENSITY_THRESHOLD: float = 0.080
 
 
-# ===================== 动态加载车型库 =====================
+# ===================== 动态获取排放因子 =====================
 
-def _load_vehicle_types() -> Dict[str, Dict]:
-    """从 vehicle_types.json 加载车型参数并索引。"""
-    vehicles = _load_raw_vehicle_types()
-    if vehicles:
-        return {v["id"]: v for v in vehicles}
-    logger.warning("[车型库] 未找到车型数据，使用内置默认因子")
-    return {}
-
-
-_VEHICLE_LIB: Dict[str, Dict] = _load_vehicle_types()
-
-
-def get_emission_factor(vehicle_type: str) -> float:
+def get_emission_factor(vehicle_type: str, season: str = "夏", h2_source: str = "工业副产氢") -> float:
     """
     获取指定车型的碳排放因子（kg CO₂/吨·km）。
 
-    优先从车型库文件读取，其次使用十五运会专项因子表，最后使用柴油重卡默认值。
+    使用 vehicle_lib 中的参数，支持季节调整（仅新能源车）和氢源调整（FCEV）。
     """
-    vehicle = _VEHICLE_LIB.get(vehicle_type)
-    if vehicle:
-        return vehicle.get("emission_factor_default", 0.060)
-    return FIFTEENTH_GAMES_EMISSION_FACTORS.get(vehicle_type, 0.060)
+    clean_vtype = vehicle_type.split('_')[0].lower()
+    params = get_vehicle_params(clean_vtype)
+    season_key = SEASON_MAP.get(season, 'summer')
+    
+    # FCEV 特殊处理氢源
+    if clean_vtype == "fcev":
+        from utils.vehicle_lib import H2_INTENSITY
+        intensity_g = H2_INTENSITY.get(h2_source, 35)
+    else:
+        intensity_g = params.get("intensity_g_per_tkm", 60)
+    
+    # 转换为 kg CO₂/吨·km
+    base_ef = intensity_g / 1000.0
+    
+    # 新能源车季节修正
+    if params.get("is_new_energy", False):
+        from utils.vehicle_lib import SEASON_FACTOR
+        base_ef *= SEASON_FACTOR.get(season_key, 1.00)
+    
+    return base_ef
 
 
 # ===================== 核心碳排放计算 =====================
@@ -71,46 +53,50 @@ def calc_emission(
     distance_km: float,
     load_kg: float,
     vehicle_type: str = "diesel_heavy",
+    season: str = "夏",
+    h2_source: str = "工业副产氢",
 ) -> float:
     """
-    单段碳排放计算（标准公式）。
-
-    公式: E = distance_km × emission_factor × load_ton
-
-    Args:
-        distance_km: 行驶距离（km）
-        load_kg: 当前载重（kg）
-        vehicle_type: 车型 ID
-
-    Returns:
-        碳排放量（kg CO₂）
+    单段碳排放计算（对接双公式）。
+    
+    载重大于 0 时按有载算，载重等于 0 时按空驶算。
     """
-    if distance_km <= 0 or load_kg <= 0:
+    # 距离非法或载重为负时不计算（允许 load_kg == 0 作为空驶）
+    if distance_km <= 0 or load_kg < 0:
         return 0.0
-    ef = get_emission_factor(vehicle_type)
-    load_ton = load_kg / 1000.0
-    return distance_km * ef * load_ton
+        
+    clean_vtype = vehicle_type.split('_')[0].lower()
+    
+    # 使用 vehicle_lib 的双公式计算，返回 g，转为 kg
+    carbon_g = carbon_per_segment(
+        vtype=clean_vtype, 
+        load_kg=load_kg, 
+        distance_km=distance_km, 
+        season=season, 
+        h2_source=h2_source
+    )
+    return carbon_g / 1000.0
 
 
 def calc_trunk_emission(
     distance_km: float,
     total_weight_kg: float,
     vehicle_type: str = "diesel_heavy",
+    season: str = "夏",
+    h2_source: str = "工业副产氢",
 ) -> float:
     """
     干线运输碳排放计算（总仓 → 中转仓，满载直达）。
-
-    干线场景下以总调拨重量作为载重，不涉及逐站卸货。
-
-    Args:
-        distance_km: 干线距离（km）
-        total_weight_kg: 批量调拨总重（kg）
-        vehicle_type: 车型 ID
-
-    Returns:
-        干线碳排放（kg CO₂）
+    干线场景下以总调拨重量作为载重，包含单次冷启动碳排。
     """
-    return calc_emission(distance_km, total_weight_kg, vehicle_type)
+    clean_vtype = vehicle_type.split('_')[0].lower()
+    params = get_vehicle_params(clean_vtype)
+    
+    # 包含该车型的冷启动碳排
+    cold_start_kg = params.get("cold_start_g", 0) / 1000.0
+    running_carbon_kg = calc_emission(distance_km, total_weight_kg, vehicle_type, season, h2_source)
+    
+    return cold_start_kg + running_carbon_kg
 
 
 def calc_terminal_emission(
@@ -118,34 +104,26 @@ def calc_terminal_emission(
     demands_kg: List[float],
     vehicle_capacity_kg: float,
     vehicle_type: str = "diesel_heavy",
+    season: str = "夏",
+    h2_source: str = "工业副产氢",
 ) -> Dict[str, object]:
-    """
-    末端配送碳排放计算（中转仓 → 各配送点，逐站卸货载重递减）。
-
-    Args:
-        distances: 路线中各段距离列表（km），长度 = 节点数 - 1
-        demands_kg: 各配送节点的需求量列表（kg），与路线中非仓库节点对应
-        vehicle_capacity_kg: 车辆载重上限（kg）
-        vehicle_type: 车型 ID
-
-    Returns:
-        {"total_carbon_kg": ..., "segments": [...]}
-    """
-    ef = get_emission_factor(vehicle_type)
+    """末端配送碳排放计算（中转仓 → 各配送点，逐站卸货载重递减）。"""
     current_load_kg = min(sum(demands_kg), vehicle_capacity_kg)
     segments: List[Dict[str, float]] = []
     total_carbon = 0.0
 
     for i, dist in enumerate(distances):
-        load_ton = current_load_kg / 1000.0
-        carbon = dist * ef * load_ton
+        # 使用双公式计算
+        carbon_kg = calc_emission(dist, current_load_kg, vehicle_type, season, h2_source)
+        
         segments.append({
             "segment_idx": i,
             "distance_km": dist,
             "load_kg": current_load_kg,
-            "carbon_kg": round(carbon, 4),
+            "carbon_kg": round(carbon_kg, 4),
         })
-        total_carbon += carbon
+        total_carbon += carbon_kg
+        
         # 到达节点后卸货
         if i < len(demands_kg):
             current_load_kg -= demands_kg[i]
@@ -157,38 +135,70 @@ def calc_terminal_emission(
     }
 
 
+def compute_route_emission(
+    distances: List[float],
+    demands_kg: List[float],
+    vehicle_type: str = "diesel_heavy",
+    season: str = "夏",
+    h2_source: str = "工业副产氢",
+    include_cold_start: bool = True,
+) -> Dict[str, object]:
+    """按路径分段计算整条路线的碳排放（包含冷启动 + 实际起始载重）。"""
+    clean_vtype = vehicle_type.split('_')[0].lower()
+    params = get_vehicle_params(clean_vtype)
+    
+    total_carbon = 0.0
+    segments: List[Dict[str, float]] = []
+    current_load_kg = sum(demands_kg)
+    
+    if include_cold_start:
+        total_carbon += params.get("cold_start_g", 0) / 1000.0
+
+    for i, dist in enumerate(distances):
+        carbon_kg = calc_emission(dist, current_load_kg, vehicle_type, season, h2_source)
+        
+        segments.append({
+            "segment_idx": i,
+            "distance_km": dist,
+            "load_kg": current_load_kg,
+            "carbon_kg": round(carbon_kg, 4),
+        })
+        total_carbon += carbon_kg
+        
+        if i < len(demands_kg):
+            current_load_kg -= demands_kg[i]
+            current_load_kg = max(current_load_kg, 0.0)
+
+    return {
+        "total_carbon_kg": round(total_carbon, 4),
+        "segments": segments,
+        "total_distance_km": round(sum(distances), 2),
+        "initial_load_kg": sum(demands_kg),
+    }
+
+
 def calc_route_carbon(
     distance_km: float,
     load_kg: float = 0.0,
     vehicle_type: str = "diesel_heavy",
+    season: str = "夏",
+    h2_source: str = "工业副产氢",
 ) -> float:
-    """
-    考虑载重的单路段碳排放（兼容旧接口）。
-
-    采用标准公式，不再使用惩罚系数近似。
-    """
-    return calc_emission(distance_km, load_kg, vehicle_type)
+    """考虑载重的单路段碳排放（兼容旧接口）。"""
+    return calc_emission(distance_km, load_kg, vehicle_type, season, h2_source)
 
 
 def calc_total_carbon(
     route_distances: List[float],
     route_loads: List[float],
     vehicle_type: str = "diesel_heavy",
+    season: str = "夏",
+    h2_source: str = "工业副产氢",
 ) -> Dict[str, float]:
-    """
-    计算多路段碳排放汇总。
-
-    Args:
-        route_distances: 各路段距离（km）
-        route_loads: 各路段起始载重（kg）
-        vehicle_type: 车型 ID
-
-    Returns:
-        包含总距离、总碳排放、平均碳效率等的字典
-    """
+    """计算多路段碳排放汇总。"""
     total_distance = sum(route_distances)
     emissions = [
-        calc_emission(d, load, vehicle_type)
+        calc_emission(d, load, vehicle_type, season, h2_source)
         for d, load in zip(route_distances, route_loads)
     ]
     total_emission = sum(emissions)
@@ -207,38 +217,20 @@ def calc_total_carbon(
 # ===================== 碳排放等价物 =====================
 
 def carbon_to_trees(carbon_kg: float) -> float:
-    """
-    将碳排放量换算为等效树木年吸收量。
-
-    参考值: 一棵成年树每年约吸收 12 kg CO₂（中国林科院参考值），
-    而非此前错误的 5 kg/天。
-    """
-    annual_absorption_per_tree = 12.0  # kg CO₂/棵·年
+    """将碳排放量换算为等效树木年吸收量（12 kg CO₂/棵·年）。"""
+    annual_absorption_per_tree = 12.0
     if annual_absorption_per_tree <= 0:
         return 0.0
     return carbon_kg / annual_absorption_per_tree
 
 
 def carbon_equivalents(carbon_kg: float) -> Dict[str, float]:
-    """
-    将碳排放转换为多种易感知的环保等价物。
-
-    Args:
-        carbon_kg: 碳排放量（kg CO₂）
-
-    Returns:
-        包含树木、家用电、小汽车年排放等效值的字典
-    """
+    """将碳排放转换为多种易感知的环保等价物。"""
     return {
-        # 树木年吸收量（12 kg CO₂/棵·年）
         "trees_per_year": round(carbon_kg / 12.0, 1),
-        # 家庭月用电等效（中国 3 口之家月均 300 kWh × 0.6 kg/kWh = 180 kg）
         "household_months": round(carbon_kg / 180.0, 1),
-        # 小汽车年排放等效（中国轿车年均 2400 kg CO₂）
         "car_years": round(carbon_kg / 2400.0, 2),
-        # 汽油等效（每升约 2.3 kg CO₂）
         "gasoline_liters": round(carbon_kg / 2.3, 1),
-        # 电力等效（全国平均 0.6 kg CO₂/kWh）
         "electricity_kwh": round(carbon_kg / 0.6, 1),
     }
 
@@ -246,11 +238,7 @@ def carbon_equivalents(carbon_kg: float) -> Dict[str, float]:
 # ===================== 碳排放强度标签 =====================
 
 def get_carbon_intensity_label(carbon_per_ton_km: float) -> str:
-    """
-    根据碳排放强度（kg CO₂/吨·km）返回等级标签。
-
-    评级标准参考十五运会各车型全链排放因子分布区间。
-    """
+    """根据碳排放强度（kg CO₂/吨·km）返回等级标签。"""
     if carbon_per_ton_km < 0.030:
         return "🟢 优秀（新能源领先）"
     elif carbon_per_ton_km < 0.045:
@@ -268,54 +256,55 @@ def get_carbon_intensity_label(carbon_per_ton_km: float) -> str:
 def generate_optimization_suggestions(
     total_carbon_kg: float,
     vehicle_type: str,
-    avg_load_rate: float = 0.5,
+    avg_load_rate: float = 0.5, # 保留为了接口兼容，内部不再使用
     total_distance_km: float = 0.0,
 ) -> List[str]:
-    """
-    根据碳排放数据自动生成优化建议。
-
-    Args:
-        total_carbon_kg: 总碳排放（kg CO₂）
-        vehicle_type: 当前使用车型
-        avg_load_rate: 平均装载率（0~1）
-        total_distance_km: 总行驶距离（km）
-
-    Returns:
-        建议文本列表
-    """
+    """根据实际碳排放数据生成优化建议（已清理伪装载率命题）。"""
     suggestions: List[str] = []
-    ef = get_emission_factor(vehicle_type)
+    
+    current_ef = get_emission_factor(vehicle_type)
 
-    # 碳因子过高 → 推荐替换车型
-    if ef >= _HIGH_INTENSITY_THRESHOLD:
-        better_types = [
-            (k, v) for k, v in FIFTEENTH_GAMES_EMISSION_FACTORS.items()
-            if v < ef
-        ]
+    TYPE_MAPPING = {
+        "diesel": "柴油重卡",
+        "lng": "LNG天然气重卡",
+        "hev": "混合动力 (HEV)",
+        "phev": "插电混动 (PHEV)",
+        "bev": "纯电动 (BEV)",
+        "fcev": "氢燃料电池 (FCEV)",
+    }
+
+    # 1. 车型替换建议：动态从 VEHICLE_LIB 寻找更优解
+    better_types = []
+    for v_id, v_info in VEHICLE_LIB.items():
+        v_ef = v_info.get("intensity_g_per_tkm", 0) / 1000.0
+        if 0 < v_ef < current_ef:
+             v_name = TYPE_MAPPING.get(v_id, v_id.upper())
+             better_types.append((v_name, v_ef))
+            
+    if better_types:
         better_types.sort(key=lambda x: x[1])
-        if better_types:
-            best_id, best_ef = better_types[0]
-            reduction_pct = (1 - best_ef / ef) * 100
-            suggestions.append(
-                f"当前车型 [{vehicle_type}] 碳因子偏高({ef} kg CO₂/吨·km)，"
-                f"建议替换为 [{best_id}]（{best_ef}），预计减排 {reduction_pct:.0f}%"
-            )
-
-    # 装载率偏低 → 提升装载率
-    if avg_load_rate < 0.6:
+        best_name, best_ef = better_types[0]
+        reduction_pct = (1 - best_ef / current_ef) * 100
         suggestions.append(
-            f"平均装载率仅 {avg_load_rate:.0%}，建议优化拼载策略，"
-            f"将装载率提升至 80% 以上可降低单位碳排放约 {(1 - avg_load_rate / 0.8) * 100:.0f}%"
+            f"当前车队包含高碳排车型，建议逐步替换为 [{best_name}]，"
+            f"长远来看预计可实现 {reduction_pct:.0f}% 的综合减排。"
         )
 
-    # 距离较长时建议增设中转仓
+    # 2. 实际调度优化建议（替代原先伪逻辑）
+    suggestions.append(
+        "当前系统已启用实际载荷动态核算。为进一步降低碳足迹，建议在实际调度中"
+        "尽量减少车辆的去程空载或回程空驶率。"
+    )
+
+    # 3. 选址优化建议（更新为 K-Medoids）
     if total_distance_km > 500:
         suggestions.append(
-            "总行驶距离较长，建议通过 K-Means 聚类增设中转仓，缩短末端配送里程"
+            "总行驶距离较长，建议使用系统内置的 K-Medoids 全国候选仓规划功能，"
+            "就近增设真实中转枢纽，有效缩短末端高频配送里程。"
         )
 
     if not suggestions:
-        suggestions.append("当前方案碳排放指标良好，暂无进一步优化建议")
+        suggestions.append("当前方案碳排放指标良好，处于绿色物流领先水平。")
 
     return suggestions
 
@@ -323,11 +312,7 @@ def generate_optimization_suggestions(
 # ===================== 碳排放报告 =====================
 
 def generate_carbon_report(df_routes: pd.DataFrame) -> pd.DataFrame:
-    """
-    为路线 DataFrame 附加碳排放量与等级列。
-
-    期望 df_routes 至少含 distance_km、load_kg 列，可选 vehicle_type 列。
-    """
+    """为路线 DataFrame 附加碳排放量与等级列。"""
     df = df_routes.copy()
     df["碳排放量_kg"] = df.apply(
         lambda row: calc_emission(

@@ -1,21 +1,8 @@
-"""碳排放计算引擎
-
-标准公式: E = distance_km × emission_factor × load_ton
-支持载重动态递减（逐站卸货后载重减少）、干线 / 末端分段核算、多中心车队汇总。
-
-核心优化：
-- 修复原代码中重复 return、残留冗余代码块等语法错误
-- 统一使用 "吨" 为内部载重单位，仅在对外接口注明千克
-- 修正碳排放等价物参数（树木年吸收 12 kg CO₂/棵·年）
-- 新增干线运输碳排放计算接口
-- 新增多中心（多中转仓）车队碳排放汇总
-- 细化异常捕获，消除裸 except
-"""
 from typing import List, Dict, Optional
 import logging
 
-from utils.vehicle_config import load_vehicle_types, get_vehicle_params  # noqa: F401
-from utils.carbon_calc import carbon_equivalents as carbon_to_equivalents  # noqa: F401
+from utils.vehicle_lib import get_vehicle_params, carbon_per_segment
+from utils.carbon_calc import carbon_equivalents as carbon_to_equivalents
 
 logger = logging.getLogger(__name__)
 
@@ -23,66 +10,52 @@ logger = logging.getLogger(__name__)
 # ===================== 碳排放计算器 =====================
 
 class CarbonCalculator:
-    """碳排放计算器（单车型）。
+    def __init__(self, vehicle_type: str = "diesel"):
+        self.vehicle_type: str = vehicle_type.split('_')[0].lower()
+        self.vehicle_params: Dict = get_vehicle_params(self.vehicle_type)
 
-    内部载重统一使用"吨"；外部接口接受"千克"并自动转换。
-    """
-
-    def __init__(self, vehicle_type: str = "diesel_heavy"):
-        self.vehicle_type: str = vehicle_type
-        self.vehicle_params: Dict = get_vehicle_params(vehicle_type)
-        self.emission_factor: float = self.vehicle_params["emission_factor"]
-        self.max_load_ton: float = self.vehicle_params["max_load_ton"]
-
-    def calc_emission(self, distance_km: float, load_kg: float) -> float:
-        """
-        单段碳排放计算: E = distance_km × emission_factor × load_ton。
-
-        Args:
-            distance_km: 行驶距离（km）
-            load_kg: 当前载重（kg）
-
-        Returns:
-            碳排放量（kg CO₂）
-        """
-        if distance_km <= 0 or load_kg <= 0:
+    def calc_emission(self, distance_km: float, load_kg: float, season: str = "夏", h2_source: str = "工业副产氢") -> float:
+        """调用底层的双公式计算"""
+        if distance_km <= 0 or load_kg < 0:
             return 0.0
-        load_ton = load_kg / 1000.0
-        return distance_km * self.emission_factor * load_ton
+        
+        # 调用黑盒，返回克(g)
+        carbon_g = carbon_per_segment(
+            vtype=self.vehicle_type, 
+            load_kg=load_kg, 
+            distance_km=distance_km, 
+            season=season, 
+            h2_source=h2_source
+        )
+        # 转为千克(kg)
+        return carbon_g / 1000.0
 
-    def calc_trunk_emission(self, distance_km: float, total_weight_kg: float) -> float:
-        """干线运输碳排放（满载直达，不逐站卸货）。"""
-        return self.calc_emission(distance_km, total_weight_kg)
+    def calc_trunk_emission(self, distance_km: float, total_weight_kg: float, season: str = "夏", h2_source: str = "工业副产氢") -> float:
+        """干线运输碳排放（满载直达，不逐站卸货，但包含一次冷启动）。"""
+        running_carbon = self.calc_emission(distance_km, total_weight_kg, season, h2_source)
+        cold_start_kg = self.vehicle_params.get("cold_start_g", 0) / 1000.0
+        return running_carbon + cold_start_kg
 
-
-# ===================== 路线碳排放（逐段递减） =====================
 
 def calc_route_carbon(
     distance_matrix: List[List[float]],
     route: List[int],
     demands: List[float],
-    vehicle_type: str = "diesel_heavy",
+    vehicle_type: str = "diesel",
     vehicle_capacity: float = 10000.0,
+    season: str = "夏",
+    h2_source: str = "工业副产氢"
 ) -> Dict:
-    """
-    计算单条路线碳排放（载重逐站递减）。
-
-    Args:
-        distance_matrix: N×N 距离矩阵（km）
-        route: 访问顺序节点索引，如 [0, 3, 1, 4, 0]（0=仓库）
-        demands: 各节点需求量（kg），索引 0 为仓库（需求为 0）
-        vehicle_type: 车型 ID
-        vehicle_capacity: 车辆载重上限（kg）
-
-    Returns:
-        包含总距离、总碳排放、各路段详情的字典
-    """
-    calculator = CarbonCalculator(vehicle_type)
-    ef = calculator.emission_factor
+    """计算单条路线碳排放（包含冷启动 + 载重逐站递减双公式）。"""
+    
+    clean_vtype = vehicle_type.split('_')[0].lower()
+    params = get_vehicle_params(clean_vtype)
 
     segments: List[Dict] = []
     total_distance = 0.0
-    total_carbon = 0.0
+    
+    # 【核心修复1】路线总碳排的底色是该车的冷启动碳排 (g转kg)
+    total_carbon = params.get("cold_start_g", 0) / 1000.0
 
     # 出发时载重 = 路线中所有配送节点需求之和（不超过容量）
     route_demand_kg = sum(demands[n] for n in route if n != route[0])
@@ -93,8 +66,16 @@ def calc_route_carbon(
         to_node = route[i + 1]
 
         distance = distance_matrix[from_node][to_node]
-        load_ton = current_load_kg / 1000.0
-        carbon = distance * ef * load_ton
+        
+        # 【核心修复2】直接调用 vehicle_lib 的双公式计算单段碳排
+        carbon_g = carbon_per_segment(
+            vtype=clean_vtype,
+            load_kg=current_load_kg,
+            distance_km=distance,
+            season=season,
+            h2_source=h2_source
+        )
+        carbon_kg = carbon_g / 1000.0
 
         segments.append({
             "from": from_node,
@@ -103,11 +84,11 @@ def calc_route_carbon(
             "load_before_kg": round(current_load_kg, 1),
             "demand_kg": demands[to_node],
             "load_after_kg": round(max(current_load_kg - demands[to_node], 0), 1),
-            "carbon_kg": round(carbon, 4),
+            "carbon_kg": round(carbon_kg, 4),
         })
 
         total_distance += distance
-        total_carbon += carbon
+        total_carbon += carbon_kg
 
         # 到达节点后卸货
         current_load_kg -= demands[to_node]
@@ -122,35 +103,23 @@ def calc_route_carbon(
     }
 
 
-# ===================== 车队碳排放汇总 =====================
-
 def calc_fleet_carbon(
     distance_matrix: List[List[float]],
     routes: List[List[int]],
     demands: List[float],
-    vehicle_type: str = "diesel_heavy",
+    vehicle_type: str = "diesel",
     vehicle_capacity: float = 10000.0,
+    season: str = "夏",
+    h2_source: str = "工业副产氢"
 ) -> Dict:
-    """
-    计算整个车队的总碳排放。
-
-    Args:
-        distance_matrix: N×N 距离矩阵
-        routes: 各车辆路线列表，如 [[0,3,1,0], [0,4,2,0]]
-        demands: 各节点需求量（kg）
-        vehicle_type: 车型 ID
-        vehicle_capacity: 车辆载重上限（kg）
-
-    Returns:
-        含总距离、总碳排放、平均碳效率、各路线详情的字典
-    """
+    """计算整个车队的总碳排放（支持传递环境变量）。"""
     route_details: List[Dict] = []
     total_distance = 0.0
     total_carbon = 0.0
 
     for i, route in enumerate(routes):
         result = calc_route_carbon(
-            distance_matrix, route, demands, vehicle_type, vehicle_capacity
+            distance_matrix, route, demands, vehicle_type, vehicle_capacity, season, h2_source
         )
         route_details.append({"vehicle_id": i, "route": route, **result})
         total_distance += result["total_distance_km"]

@@ -1,19 +1,22 @@
-﻿"""碳排放概览页面 - 碳排放总览与基本分析
-
-修复：
-- 树等效从21.7修正为12 kg CO2/棵年
-- 使用 utils/carbon_calc.py 标准函数
-- 使用实际优化数据（而非伪造数据）
-"""
-import streamlit as st
+﻿import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+
+from utils.vehicle_lib import VEHICLE_LIB
 
 st.set_page_config(page_title="碳排放概览", page_icon="")
 st.title(" 第六步：碳排放概览")
 st.markdown("物流碳排放总览与分析")
 
+POWER_TYPE_MAPPING = {
+    "diesel": "柴油重卡",
+    "lng": "LNG天然气重卡",
+    "hev": "混合动力 (HEV)",
+    "phev": "插电混动 (PHEV)",
+    "bev": "纯电动 (BEV)",
+    "fcev": "氢燃料电池 (FCEV)",
+}
 
 # ===================== 读取优化结果 =====================
 results = st.session_state.get("optimization_results") or st.session_state.get("results")
@@ -36,6 +39,8 @@ baseline_emission = results.get("baseline_emission", 0)
 reduction_pct = results.get("reduction_percent", 0)
 total_distance = results.get("total_distance_km", 0)
 num_vehicles = results.get("num_vehicles_used", 0)
+fleet_used_by_type = results.get("fleet_used_by_type", {}) or {}
+fleet_max_by_type = results.get("fleet_max_by_type", {}) or {}
 
 # 碳等效换算（12 kg CO2/棵年）
 try:
@@ -63,6 +68,24 @@ with col4:
 
 st.markdown("---")
 
+# ===================== 车队使用情况（按动力类型） =====================
+if fleet_used_by_type or fleet_max_by_type:
+    st.markdown("###  车队派车情况（实际 / 上限）")
+    all_types = sorted(set(list(fleet_max_by_type.keys()) + list(fleet_used_by_type.keys())))
+    rows = []
+    for vtype in all_types:
+        used = int(fleet_used_by_type.get(vtype, 0) or 0)
+        cap = int(fleet_max_by_type.get(vtype, 0) or 0)
+        rows.append({
+            "动力类型": POWER_TYPE_MAPPING.get(vtype, vtype),
+            "实际派车数": used,
+            "可用上限": cap,
+            "闲置车辆数": max(cap - used, 0),
+        })
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+    st.caption("未被分配任务的车辆视为闲置，不计入本次碳排放。")
+
 # ===================== 碳排放等效分析 =====================
 st.markdown("###  碳排放等效换算")
 st.markdown(f"""
@@ -82,7 +105,7 @@ st.markdown("###  基线 vs 优化 碳排放对比")
 col_left, col_right = st.columns(2)
 with col_left:
     df_compare = pd.DataFrame({
-        "方案": [" 基线方案（单独配送）", " 优化方案（VRP调度）"],
+        "方案": [" 基线方案（单独配送）", " 优化方案（FSMVRP调度）"],
         "碳排放(kg CO₂)": [baseline_emission, total_emission],
     })
     fig_bar = px.bar(df_compare, x="方案", y="碳排放(kg CO₂)", color="方案",
@@ -167,9 +190,12 @@ st.markdown("###  优化建议")
 
 try:
     from utils.carbon_calc import generate_optimization_suggestions
+    suggest_type = None
+    if fleet_used_by_type:
+        suggest_type = max(fleet_used_by_type.items(), key=lambda kv: kv[1])[0]
     suggestions = generate_optimization_suggestions(
         total_carbon_kg=total_emission,
-        vehicle_type=results.get("vehicle_type", "diesel_heavy"),
+        vehicle_type=suggest_type or "diesel_heavy",
         total_distance_km=total_distance,
     )
     if suggestions:
@@ -180,11 +206,10 @@ try:
 except Exception:
     tips = []
     if reduction_pct < 10:
-        tips.append(" 当前减排比例较低，建议考虑切换新能源车型（如纯电动BEV、燃料电池FCEV）")
+        tips.append(" 当前减排比例较低，建议尝试在「车辆配置」中放宽新能源车型（BEV/FCEV）的可用上限。")
     if num_vehicles > 1:
-        tips.append(" 可尝试优化车队规模，减少空载行驶")
-    tips.append(" 合理整合物资需求，提高单车装载率")
-    tips.append(" 设置中转仓缩短配送半径，降低运输碳排放")
+        tips.append(" 结合双公式测算，本次调度已尽量为您减少了「去程空载」与「回程空跑」的闲置碳排浪费。")
+    tips.append(" 系统已默认启用 K-Medoids 设置真实物流枢纽，有效缩短了高频末端配送的半径。")
     for tip in tips:
         st.markdown(f"- {tip}")
 

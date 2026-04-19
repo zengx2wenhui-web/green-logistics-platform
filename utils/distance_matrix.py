@@ -80,6 +80,44 @@ def haversine_matrix_vectorized(
     return R * 2 * np.arcsin(np.sqrt(a))
 
 
+def haversine_matrix_general(
+    coords_a: np.ndarray,
+    coords_b: np.ndarray,
+) -> np.ndarray:
+    """
+    通用向量化 Haversine 距离矩阵计算（支持 M×N 矩阵）。
+
+    用于计算两个不同坐标集合间的距离矩阵，如候选仓库到需求点的距离。
+
+    Args:
+        coords_a: shape=(M, 2)，行为 [lng, lat]，如候选仓库集合
+        coords_b: shape=(N, 2)，行为 [lng, lat]，如需求点集合
+
+    Returns:
+        shape=(M, N) 距离矩阵（km），其中 (i,j) 为 coords_a[i] 到 coords_b[j] 的距离
+    """
+    R = 6371.0
+
+    # 转为弧度
+    lat_a = np.radians(coords_a[:, 1])[:, None]  # shape=(M, 1)
+    lon_a = np.radians(coords_a[:, 0])[:, None]  # shape=(M, 1)
+    lat_b = np.radians(coords_b[:, 1])[None, :]  # shape=(1, N)
+    lon_b = np.radians(coords_b[:, 0])[None, :]  # shape=(1, N)
+
+    # 计算差值 shape=(M, N)
+    dlat = lat_b - lat_a
+    dlon = lon_b - lon_a
+
+    # Haversine 公式
+    a = (
+        np.sin(dlat / 2) ** 2
+        + np.cos(lat_a) * np.cos(lat_b) * np.sin(dlon / 2) ** 2
+    )
+    distances = R * 2 * np.arcsin(np.sqrt(a))
+
+    return distances
+
+
 # ===================== SQLite 缓存层 =====================
 
 def _get_cache_conn() -> sqlite3.Connection:
