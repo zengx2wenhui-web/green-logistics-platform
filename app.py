@@ -914,11 +914,11 @@ def render_hero() -> None:
         <section class="hero-wrap">
           <div class="hero-title">
             <h1>“碳智运”—面向多点分布式活动的物流碳足迹智能优化平台</h1>
-            <p>十五运会赛事物流碳排放智能分析与路径优化系统</p>
+            <p>多点分布式活动物流碳排放智能分析与路径优化系统</p>
           </div>
           <div class="hero-desc">
-            <h2>本平台旨在为</h2>
-            <p>大型体育赛事提供绿色物流碳足迹优化解决方案</p>
+            <h2>本平台旨在</h2>
+            <p>提供绿色物流碳足迹优化解决方案</p>
           </div>
           <div class="hero-feature-grid">
             <div class="hero-feature-card">采用高德地图 API 实现地理编码，完成场馆坐标的精确定位。</div>
