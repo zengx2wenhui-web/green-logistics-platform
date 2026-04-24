@@ -1,10 +1,17 @@
 """碳排放概览页面。"""
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+
+_APP_ROOT = Path(__file__).resolve().parents[1]
+if str(_APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(_APP_ROOT))
 
 from pages._bottom_nav import render_page_nav
 from pages._ui_shared import (
@@ -18,7 +25,7 @@ from pages._ui_shared import (
 
 
 POWER_TYPE_MAPPING = {
-    "diesel_heavy": "柴油重卡",
+    "diesel": "柴油重卡",
     "diesel": "柴油重卡",
     "lng": "LNG天然气重卡",
     "hev": "混合动力 (HEV)",
@@ -477,7 +484,7 @@ with st.container(key="carbon-overview-advice-card"):
         try:
             suggestions = generate_optimization_suggestions(
                 total_carbon_kg=total_emission,
-                vehicle_type=suggest_type or "diesel_heavy",
+                vehicle_type=suggest_type or "diesel",
                 total_distance_km=total_distance,
             )
         except Exception:

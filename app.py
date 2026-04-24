@@ -1,7 +1,4 @@
-"""
-大型赛事绿色物流碳足迹优化平台 - 主入口
-15运会赛事物流碳排放智能分析与路径优化系统
-"""
+# 主入口
 from __future__ import annotations
 
 import base64
@@ -9,11 +6,12 @@ from pathlib import Path
 
 import streamlit as st
 
+from pages._bottom_nav import render_page_nav
 from pages._ui_shared import inject_sidebar_navigation_label, render_sidebar_navigation
 from utils.vehicle_lib import VEHICLE_LIB
 
 
-# ===================== 页面配置 =====================
+# 页面配置 
 st.set_page_config(
     page_title="“碳智运”—面向多点分布式活动的物流碳足迹智能优化平台",
     page_icon="🌿",
@@ -23,8 +21,7 @@ st.set_page_config(
 
 inject_sidebar_navigation_label()
 
-
-# ===================== 立即初始化 Session State =====================
+# 立即初始化 Session State
 if "demands" not in st.session_state:
     st.session_state.demands = {}
 if "venues" not in st.session_state:
@@ -33,9 +30,8 @@ if "material_demands" not in st.session_state:
     st.session_state.material_demands = {}
 
 
-# ===================== Session State 初始化函数 =====================
+# Session State 初始化函数
 def init_session_state() -> None:
-    """初始化所有 session_state 数据（用于手动调用）。"""
     if "warehouse" not in st.session_state:
         st.session_state.warehouse = {
             "name": "",
@@ -79,7 +75,7 @@ def init_session_state() -> None:
         st.session_state.api_key_amap = ""
 
     if "vehicle_type" not in st.session_state:
-        st.session_state.vehicle_type = "diesel_heavy"
+        st.session_state.vehicle_type = "diesel"
 
     if "vehicle_capacity" not in st.session_state:
         st.session_state.vehicle_capacity = 10000
@@ -126,9 +122,8 @@ def _sum_material_demands_kg(material_demands: dict) -> float:
                     total_demand += float(material.get("weight_kg", 0) or 0)
     return total_demand
 
-
+# 获取数据汇总信息
 def get_data_summary() -> dict:
-    """获取数据汇总信息。"""
     warehouse = st.session_state.get("warehouse", {})
     venues = st.session_state.get("venues", [])
     demands = st.session_state.get("demands", {})
@@ -158,16 +153,14 @@ def get_data_summary() -> dict:
         "total_demand_kg": total_demand_kg,
     }
 
-
+# 读取图片并转为 base64；图片不存在时返回空字符串。
 def image_to_base64(path: Path) -> str:
-    """读取图片并转为 base64；图片不存在时返回空字符串。"""
     if not path.exists():
         return ""
     return base64.b64encode(path.read_bytes()).decode("utf-8")
 
-
+# 读取图片并转为 data URI；图片不存在时返回空字符串。
 def image_to_data_uri(path: Path) -> str:
-    """读取图片并转为 data URI；图片不存在时返回空字符串。"""
     if not path.exists():
         return ""
     suffix = path.suffix.lower()
@@ -179,9 +172,8 @@ def image_to_data_uri(path: Path) -> str:
     encoded = base64.b64encode(path.read_bytes()).decode("utf-8")
     return f"data:{mime};base64,{encoded}"
 
-
+# 优先使用可视化封面图，缺失时退化为纯色背景。
 def resolve_hero_image() -> str:
-    """优先使用可视化封面图，缺失时退化为纯色背景。"""
     icon_root = Path(__file__).resolve().parent / "assets" / "icons"
     candidates = [
         icon_root / "首页" / "封面.jpg",
@@ -192,9 +184,8 @@ def resolve_hero_image() -> str:
             return image_to_base64(image_path)
     return ""
 
-
+# 注入首页样式。
 def inject_home_style(hero_b64: str) -> None:
-    """注入首页样式。"""
     background_css = (
         f'background-image: linear-gradient(rgba(217, 229, 205, 0.52), rgba(116, 164, 66, 0.62)),'
         f' url("data:image/jpeg;base64,{hero_b64}");'
@@ -388,9 +379,9 @@ def inject_home_style(hero_b64: str) -> None:
             padding-bottom: 0;
         }}
         .hero-wrap {{
-            min-height: 690px;
+            min-height: 640px;
             border-radius: 0;
-            padding: 0.75rem 2.6rem 1.25rem 2.6rem;
+            padding: 0.75rem 2.6rem 1.8rem 2.6rem;
             {background_css}
             background-size: cover;
             background-position: center;
@@ -465,6 +456,7 @@ def inject_home_style(hero_b64: str) -> None:
         }}
         .section-flow {{
             background: #EEF5E3 !important;
+            padding: 2.4rem 2.5rem 1.2rem 2.5rem;
         }}
         .flow-card {{
             background: linear-gradient(180deg, rgba(250, 252, 244, 0.98), rgba(238, 245, 227, 0.96));
@@ -473,21 +465,6 @@ def inject_home_style(hero_b64: str) -> None:
             padding: 1.6rem 1.5rem 1.3rem 1.5rem;
             box-shadow: 0 12px 24px rgba(72, 98, 43, 0.08);
             overflow: visible;
-        }}
-        .section-module {{
-            background: #DFEFC8 !important;
-        }}
-        .section-tech {{
-            margin-top: 0;
-            background: #EEF5E3;
-            border-radius: 0;
-            padding: 2.5rem 2.5rem 2.5rem 2.5rem;
-        }}
-        .section-tech-empty {{
-            margin-top: 0;
-            background: #DFEFC8;
-            border-radius: 0;
-            min-height: 280px;
         }}
         .section-title {{
             text-align: center;
@@ -587,110 +564,32 @@ def inject_home_style(hero_b64: str) -> None:
             visibility: visible;
             transform: translateX(-50%) translateY(0);
         }}
-        .module-grid {{
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 1.2rem;
-            margin-top:1.5rem;
-        }}
-        .module-card {{
-            background: rgba(244, 244, 244, 0.92);
-            border-radius: 18px;
-            min-height: 270px;
-            padding: 1.15rem 1.14rem;
-            box-shadow: 0 5px 14px rgba(0, 0, 0, 0.12);
-        }}
-        .module-card h4 {{
-            margin: 0 0 0.72rem 0;
-            text-align: center;
-            font-size: clamp(1.38rem, 1.52vw, 1.8rem);
-            font-weight: 700;
-            color: #121212;
-        }}
-        .module-card ul {{
-            margin: 0;
-            padding-left: 1.2rem;
-            font-size: clamp(0.96rem, 0.98vw, 1.1rem);
-            line-height: 1.48;
-            color: #1e1e1e;
-        }}
-        .module-card p {{
-            margin: 0.3rem 0 0 0;
-            font-size: clamp(0.96rem, 0.98vw, 1.1rem);
-            line-height: 1.45;
-            color: #1e1e1e;
-        }}
-        .module-streamlit-card {{
-            background: rgba(244, 244, 244, 0.92);
-            border-radius: 18px;
-            min-height: 270px;
-            padding: 1.15rem 1.14rem;
-            box-shadow: 0 5px 14px rgba(0, 0, 0, 0.12);
-            margin-bottom: 1rem;
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
-        }}
-        .module-streamlit-card:hover {{
-            transform: translateY(-9px) scale(1.015);
-            box-shadow: 0 14px 22px rgba(0, 0, 0, 0.2);
-        }}
-        .module-step {{
-            text-align: center;
-            margin: 0 0 0.72rem 0;
-            font-size: clamp(1.38rem, 1.52vw, 1.8rem);
-            font-weight: 700;
-            color: #121212;
-        }}
-        .module-title {{
-            margin: 0.1rem 0 0.4rem 0;
-            font-size: clamp(0.96rem, 0.98vw, 1.1rem);
-            line-height: 1.45;
-            color: #1e1e1e;
-        }}
-        .module-list {{
-            margin: 0;
-            padding-left: 1.2rem;
-            font-size: clamp(0.96rem, 0.98vw, 1.1rem);
-            line-height: 1.48;
-            color: #1e1e1e;
-        }}
-        .module-list li {{
-            margin: 0.2rem 0;
-        }}
-        .quick-link-title {{
-            margin: 2rem 0 0.8rem 0;
-            text-align: center;
-            font-size: clamp(1.15rem, 1.25vw, 1.35rem);
-            color: #3a4a2b;
-            font-weight: 600;
-        }}
-        .tech-wrap {{
-            margin-top: 1.4rem;
-            margin-bottom: 0.5rem;
-        }}
         .architecture-shell {{
             display: flex;
             justify-content: center;
             align-items: center;
             width: 100%;
-            padding: 1.4rem 2.5rem 2.5rem 2.5rem;
+            padding: 0 2.5rem 1.4rem 2.5rem;
             box-sizing: border-box;
         }}
         .architecture-card {{
-            width: min(100%, 760px);
-            background: #eef5e3;
-            border-radius: 12px;
-            padding: 1.35rem 1.5rem 1.45rem 1.5rem;
+            width: min(100%, 860px);
+            background: linear-gradient(180deg, rgba(250, 252, 244, 0.98), rgba(238, 245, 227, 0.96));
+            border-radius: 24px;
+            padding: 1.55rem 1.65rem 1.6rem 1.65rem;
+            border: 1px solid rgba(130, 155, 104, 0.24);
+            box-shadow: 0 14px 28px rgba(72, 98, 43, 0.1);
             box-sizing: border-box;
         }}
         .architecture-title {{
-            margin: 0 0 0.9rem 0;
+            margin: 0 0 0.95rem 0;
             text-align: center;
-            font-size: clamp(1.2rem, 1.6vw, 1.55rem);
-            font-weight: 600;
+            font-size: clamp(1.32rem, 1.7vw, 1.72rem);
+            font-weight: 650;
             color: #3a4a2b;
         }}
         .architecture-expander {{
-            width: min(100%, 820px);
+            width: min(100%, 100%);
             margin: 0 auto;
         }}
         .architecture-toggle {{
@@ -759,9 +658,6 @@ def inject_home_style(hero_b64: str) -> None:
             .flow-arrow {{
                 min-height: 72px;
             }}
-            .module-grid {{
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-            }}
         }}
         @media (max-width: 900px) {{
             .block-container {{
@@ -786,7 +682,7 @@ def inject_home_style(hero_b64: str) -> None:
 
         .hero-desc {{
             margin-left: 0.8rem;
-            margin-top: 18rem;   /* 按效果再微调，比如 15rem / 16rem / 17rem */
+            margin-top: 18rem; 
             margin-bottom: 0.35rem;
         }}
 
@@ -806,8 +702,8 @@ def inject_home_style(hero_b64: str) -> None:
         .section-block {{
             padding: 2rem 1rem;
         }}
-        .module-grid {{
-            grid-template-columns: 1fr;
+        .section-flow {{
+            padding: 1.8rem 1rem 0.9rem 1rem;
         }}
         .flow-row {{
             gap: 0.6rem;
@@ -821,15 +717,17 @@ def inject_home_style(hero_b64: str) -> None:
             width: 100%;
             min-width: 0;
         }}
+        .architecture-shell {{
+            padding: 0 0 1rem 0;
+        }}
         }}
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-
+# 渲染左侧栏。
 def render_sidebar(summary: dict) -> None:
-    """渲染左侧栏。"""
     icon_dir = Path(__file__).resolve().parent / "assets" / "icons" / "首页"
     logo_path = icon_dir / "logo.png"
     menu_icon_path = icon_dir / "三杠.png"
@@ -932,111 +830,13 @@ def render_hero() -> None:
     )
 
 
-def render_module_section() -> None:
-    """渲染核心功能模块"""
-    modules = [
-        (
-            "Step 1",
-            "仓库设置",
-            [
-                "配置总仓地址、容量与坐标",
-                "支持高德地理编码与手动坐标录入",
-                "仓库信息写入全局调度上下文",
-                "为后续路径优化提供统一起点",
-            ],
-        ),
-        (
-            "Step 2",
-            "场馆录入",
-            [
-                "在线添加与文件批量导入双模式",
-                "自动识别场馆名称/地址等核心字段",
-                "高德编码补全场馆坐标",
-                "列表管理、删除与地图联动展示",
-            ],
-        ),
-        (
-            "Step 3",
-            "物资需求",
-            [
-                "智能清洗 Excel/CSV/TXT/JSON 物资文件",
-                "动态识别物资列并统一换算为 kg",
-                "在线编辑多品类物资需求表",
-                "自动汇总总需求并写入调度数据",
-            ],
-        ),
-        (
-            "Step 4",
-            "车辆配置",
-            [
-                "基于车型库配置异构运输车队",
-                "支持柴油、LNG、混动、纯电、氢燃料等车型",
-                "维护车辆数、载重与碳排参数",
-                "为求解器提供车队规模与运力约束",
-            ],
-        ),
-        (
-            "Step 5",
-            "路径优化",
-            [
-                "基于坐标构建距离矩阵",
-                "真实候选仓 K-Medoids 中转枢纽选址",
-                "OR-Tools FSMVRP 异构车队求解",
-                "执行运力可行性检查与异常拦截",
-            ],
-        ),
-        (
-            "Step 6",
-            "碳排放概览",
-            [
-                "展示基线与优化后总碳排",
-                "输出减排率、运输距离与等效指标",
-                "汇总多条路线的整体表现",
-            ],
-        ),
-        (
-            "Step 7",
-            "碳排放分析",
-            [
-                "按车型与路线分段分析碳排放",
-                "结合季节与氢气来源修正排放因子",
-                "输出对比图表与减排潜力分析",
-            ],
-        ),
-        (
-            "Step 8",
-            "优化结果",
-            [
-                "Folium 物流网络与调度路径地图",
-                "逐车调度详情与卸货清单展示",
-                "优化结果、路线明细与汇总导出",
-            ],
-        ),
-    ]
-
-    cards_html = []
-    for step, title, details in modules:
-        detail_html = "".join(f"<li>{item}</li>" for item in details)
-        cards_html.append(
-            f"""
-<div class="module-streamlit-card">
-  <div class="module-step">{step}</div>
-  <p class="module-title"><strong>{title}</strong></p>
-  <ul class="module-list">{detail_html}</ul>
-</div>
-"""
-        )
-
-    st.markdown(
-        f"""
-<section class="section-block section-module" style="margin-top:0;">
-  <h3 class="section-title">核心功能模块</h3>
-  <div class="module-grid">
-    {''.join(cards_html)}
-  </div>
-</section>
-""",
-        unsafe_allow_html=True,
+def render_home_action_section() -> None:
+    """Render the compact call-to-action area below the architecture card."""
+    render_page_nav(
+        None,
+        "pages/1_warehouse.py",
+        next_label="下一步：进入仓库设置",
+        key_prefix="home-action-nav",
     )
 
 
@@ -1046,10 +846,8 @@ def main() -> None:
     inject_home_style(resolve_hero_image())
     render_sidebar_navigation()
     render_hero()
-    render_module_section()
     render_architecture_html_card()
-    if st.button("下一步：进入仓库设置 ➡️", type="primary", width="stretch"):
-        st.switch_page("pages/1_warehouse.py")
+    render_home_action_section()
 
 
 
@@ -1057,7 +855,7 @@ def render_architecture_html_card() -> None:
     """Render architecture as a single HTML card with inline collapsible content."""
     st.markdown(
         """
-        <section class="section-block section-flow" style="margin-top:0; min-height:auto; padding:0;">
+        <section class="section-block section-flow" style="margin-top:0; min-height:auto;">
           <div class="architecture-shell">
             <div class="architecture-card">
               <h3 class="architecture-title">技术架构说明</h3>

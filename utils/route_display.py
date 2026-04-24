@@ -1,7 +1,6 @@
+# 路由显示工具
 from __future__ import annotations
-
 from typing import Any
-
 from utils.file_reader import normalize_name
 
 
@@ -16,6 +15,7 @@ EXPLICIT_ROUTE_NODE_KEYS = (
 )
 
 
+# 获取第一个非空值
 def _first_non_empty(*values: object) -> object:
     for value in values:
         if value not in (None, ""):
@@ -23,6 +23,7 @@ def _first_non_empty(*values: object) -> object:
     return None
 
 
+# 将任意值转换为 float，失败时返回 None
 def _to_float(value: object) -> float | None:
     try:
         if value in (None, ""):
@@ -32,6 +33,7 @@ def _to_float(value: object) -> float | None:
         return None
 
 
+# 将原始节点类型值规范化为 warehouse/depot/venue 等标准类型
 def _normalize_node_type(raw_type: object) -> str:
     value = str(raw_type or "").strip().lower()
     if value in {"warehouse", "main_warehouse", "总仓", "总仓库"}:
@@ -43,6 +45,7 @@ def _normalize_node_type(raw_type: object) -> str:
     return value
 
 
+# 从路由上下文中查找节点信息，优先级：仓库 > 中转仓 > 位置
 def _lookup_node(route_context: dict[str, Any] | None, name: str) -> dict[str, Any]:
     if not route_context or not name:
         return {}
@@ -63,6 +66,7 @@ def _lookup_node(route_context: dict[str, Any] | None, name: str) -> dict[str, A
     return {}
 
 
+# 将输入的节点信息规范化为包含 name/node_type/lat/lng/address 的字典
 def _normalize_route_node(
     node_like: object,
     *,
@@ -190,7 +194,7 @@ def build_route_context(nodes: list[dict], depot_results_list: list[dict]) -> di
         "depot_lookup": depot_lookup,
     }
 
-
+# 从路由结果中提取明确的节点列表，优先使用 explicit_route_node_keys 定义的字段，如果没有则尝试从 route_path_names 和 route_coords 中构建节点列表
 def _extract_explicit_route_nodes(route_result: dict, route_context: dict[str, Any]) -> list[dict[str, Any]]:
     for key in EXPLICIT_ROUTE_NODE_KEYS:
         route_nodes = route_result.get(key)
@@ -255,6 +259,7 @@ def _extract_explicit_route_nodes(route_result: dict, route_context: dict[str, A
     return []
 
 
+# 获取有序的路由节点列表，优先使用明确的节点列表字段，如果没有则尝试从路径名称和坐标构建节点列表，最后根据仓库和中转仓信息推断节点列表
 def get_ordered_route_nodes(route_result: dict, route_context: dict[str, Any]) -> list[dict[str, Any]]:
     explicit_nodes = _extract_explicit_route_nodes(route_result, route_context)
     if explicit_nodes:

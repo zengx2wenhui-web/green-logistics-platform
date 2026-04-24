@@ -1,12 +1,19 @@
 """场馆录入页面。"""
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import folium
 import pandas as pd
 import streamlit as st
 from folium import MacroElement
 from jinja2 import Template
 from streamlit_folium import st_folium
+
+_APP_ROOT = Path(__file__).resolve().parents[1]
+if str(_APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(_APP_ROOT))
 
 from pages._bottom_nav import render_page_nav
 from pages._ui_shared import (

@@ -1,126 +1,170 @@
-"""
-车辆碳排放参数库
+# 车辆参数库
+from typing import Any
 
-集中管理各类车辆的碳排放计算参数，包括季节因子、氢源强度、车辆参数字典等。
-"""
-
-from typing import Dict, Any
-
-# ===================== 季节修正因子 =====================
-# 仅对新能源车应用，柴油/LNG 基本不受季节影响
-SEASON_FACTOR: Dict[str, float] = {
+# 季节修正
+SEASON_FACTOR = {
     'spring': 1.00,
-    'summer': 1.20,   # 广东夏季高温高湿
+    'summer': 1.20,
     'autumn': 1.05,
-    'winter': 1.10    # 冬季制热（广东冬季温和，影响较小）
+    'winter': 1.10
+}
+ 
+# 氢气来源对 FCEV 碳排强度的影响
+H2_INTENSITY = {
+    'grey':       100,   # 灰氢：最差情形
+    'byproduct':  35,    # 工业副产氢：广东主流
+    'green':      15,    # 绿氢：最优
 }
 
-# ===================== 氢源碳排放强度 =====================
-# 单位: g CO₂/kg H₂（全链排放）
-H2_INTENSITY: Dict[str, float] = {
-    "灰氢": 100,
-    "工业副产氢": 35,
-    "绿氢": 15
+SEASON_ALIASES = {
+    "spring": "spring",
+    "春": "spring",
+    "春季": "spring",
+    "summer": "summer",
+    "夏": "summer",
+    "夏季": "summer",
+    "autumn": "autumn",
+    "fall": "autumn",
+    "秋": "autumn",
+    "秋季": "autumn",
+    "winter": "winter",
+    "冬": "winter",
+    "冬季": "winter",
 }
 
-# ===================== 车辆参数库 =====================
-# 单位说明：
-# - intensity_g_per_tkm: g CO₂/吨·km（有载碳排强度）
-# - empty_g_per_km: g CO₂/km（空驶碳排强度）
-# - cold_start_g: g CO₂（冷启动碳排）
-# - is_new_energy: 是否新能源车（影响季节修正）
-VEHICLE_LIB: Dict[str, Dict[str, Any]] = {
-    "diesel": {
-        "intensity_g_per_tkm": 60,
-        "empty_g_per_km": 6.0,  # 假设空驶为有载的10%
-        "cold_start_g": 3500,
-        "is_new_energy": False
+H2_SOURCE_ALIASES = {
+    "grey": "grey",
+    "gray": "grey",
+    "灰氢": "grey",
+    "byproduct": "byproduct",
+    "工业副产氢": "byproduct",
+    "副产氢": "byproduct",
+    "green": "green",
+    "绿氢": "green",
+}
+ 
+VEHICLE_LIB = {
+    'diesel': {
+        'name':                '柴油重卡（传统）',
+        'gvw_range':           (12, 49),       
+        'load_range_ton':      (8, 35),        
+        'intensity_g_per_tkm': 60,            
+        'empty_g_per_km':      312,            
+        'full_chain_range':    (780, 1180),    
+        'cold_start_g':        3500,
+        'is_new_energy':       False,
+        'reduction_vs_diesel': 0,           
     },
-    "lng": {
-        "intensity_g_per_tkm": 38,
-        "empty_g_per_km": 3.8,
-        "cold_start_g": 3500,
-        "is_new_energy": False
+    'lng': {
+        'name':                'LNG 天然气',
+        'gvw_range':           (12, 49),
+        'load_range_ton':      (7, 22),
+        'intensity_g_per_tkm': 38,
+        'empty_g_per_km':      276,
+        'full_chain_range':    (690, 890),
+        'cold_start_g':        3500,
+        'is_new_energy':       False,
+        'reduction_vs_diesel': 0.15,
     },
-    "hev": {
-        "intensity_g_per_tkm": 42,
-        "empty_g_per_km": 4.2,
-        "cold_start_g": 2000,
-        "is_new_energy": True
+    'hev': {
+        'name':                '柴电混动 HEV',
+        'gvw_range':           (12, 25),
+        'load_range_ton':      (8, 15),
+        'intensity_g_per_tkm': 42,
+        'empty_g_per_km':      260,
+        'full_chain_range':    (650, 830),
+        'cold_start_g':        2000,
+        'is_new_energy':       True,
+        'reduction_vs_diesel': 0.20,
     },
-    "phev": {
-        "intensity_g_per_tkm": 25,
-        "empty_g_per_km": 2.5,
-        "cold_start_g": 2000,
-        "is_new_energy": True
+    'phev': {
+        'name':                '插电混动 PHEV',
+        'gvw_range':           (18, 40),
+        'load_range_ton':      (10, 20),
+        'intensity_g_per_tkm': 25,
+        'empty_g_per_km':      192,
+        'full_chain_range':    (480, 720),
+        'cold_start_g':        2000,
+        'is_new_energy':       True,
+        'reduction_vs_diesel': 0.33,
     },
-    "bev": {
-        "intensity_g_per_tkm": 29,
-        "empty_g_per_km": 2.9,
-        "cold_start_g": 100,
-        "is_new_energy": True
+    'bev': {
+        'name':                '纯电动 BEV',
+        'gvw_range':           (19, 44),
+        'load_range_ton':      (12, 22),
+        'intensity_g_per_tkm': 29,
+        'empty_g_per_km':      164,
+        'full_chain_range':    (410, 780),
+        'cold_start_g':        100,
+        'is_new_energy':       True,
+        'reduction_vs_diesel': 0.60,
     },
-    "fcev": {
-        "intensity_g_per_tkm": 35,  # 默认工业副产氢，将根据氢源调整
-        "empty_g_per_km": 3.5,
-        "cold_start_g": 200,
-        "is_new_energy": True
-    }
+    'fcev': {
+        'name':                '氢燃料电池 FCEV',
+        'gvw_range':           (25, 49),
+        'load_range_ton':      (15, 25),
+        'intensity_g_per_tkm': 35,       
+        'empty_g_per_km':      184,
+        'full_chain_range':    (460, 1600),
+        'cold_start_g':        200,
+        'is_new_energy':       True,
+        'reduction_vs_diesel': 0.50,
+    },
 }
 
-# ===================== 季节映射 =====================
-SEASON_MAP: Dict[str, str] = {
-    '春': 'spring',
-    '夏': 'summer',
-    '秋': 'autumn',
-    '冬': 'winter'
-}
 
-def get_vehicle_params(vtype: str) -> Dict[str, Any]:
-    """
-    获取指定车型的参数。
+# 获取车辆完整参数对象
+def get_vehicle_params(vtype):
+    return VEHICLE_LIB.get(vtype, None)
 
-    Args:
-        vtype: 车辆类型 (diesel, lng, hev, phev, bev, fcev)
 
-    Returns:
-        车辆参数字典
-    """
-    return VEHICLE_LIB.get(vtype.lower(), VEHICLE_LIB["diesel"])
+def _normalize_with_aliases(raw_value: Any, alias_map: dict[str, str], default_key: str) -> str:
+    if raw_value is None:
+        return default_key
 
-def carbon_per_segment(vtype: str, load_kg: float, distance_km: float, season: str = "夏", h2_source: str = "工业副产氢") -> float:
-    """
-    计算单段碳排放（支持双公式：有载/空驶）。
+    text = str(raw_value).strip()
+    if not text:
+        return default_key
 
-    Args:
-        vtype: 车辆类型
-        load_kg: 载重 (kg)，>0 为有载，=0 为空驶
-        distance_km: 距离 (km)
-        season: 季节 (春/夏/秋/冬)
-        h2_source: 氢源 (仅FCEV有效)
+    return alias_map.get(text.lower(), alias_map.get(text, default_key))
 
-    Returns:
-        碳排放量 (g CO₂)
-    """
-    params = get_vehicle_params(vtype)
-    season_key = SEASON_MAP.get(season, 'summer')
 
-    # FCEV 特殊处理氢源
-    if vtype.lower() == "fcev":
-        intensity = H2_INTENSITY.get(h2_source, 35)
+def normalize_season(season: Any = "summer") -> str:
+    return _normalize_with_aliases(season, SEASON_ALIASES, "summer")
+
+
+def normalize_h2_source(h2_source: Any = "byproduct") -> str:
+    return _normalize_with_aliases(h2_source, H2_SOURCE_ALIASES, "byproduct")
+
+
+# 校验用户输入的载重是否在推荐区间内
+def validate_load_input(vtype, load_ton):
+    lo, hi = VEHICLE_LIB[vtype]['load_range_ton']
+    if lo <= load_ton <= hi:
+        return True, ""
     else:
-        intensity = params["intensity_g_per_tkm"]
-
-    # 双公式计算
+        return False, f"载重 {load_ton}t 超出 {VEHICLE_LIB[vtype]['name']} 推荐区间 {lo}-{hi}t"
+ 
+# 获取碳排强度，FCEV按氢源动态切换
+def get_intensity(vtype, h2_source='byproduct'):
+    if vtype == 'fcev':
+        return H2_INTENSITY[normalize_h2_source(h2_source)]
+    return VEHICLE_LIB[vtype]['intensity_g_per_tkm']
+ 
+ # 单段碳排计算
+def carbon_per_segment(vtype, load_kg, distance_km,
+                       season='summer', h2_source='byproduct'):
+    v = VEHICLE_LIB[vtype]
+    normalized_season = normalize_season(season)
     if load_kg > 0:
-        # 有载：强度 * 载重吨 * 距离
+        # 公式A：有货段
+        intensity = get_intensity(vtype, h2_source)
         carbon = intensity * (load_kg / 1000) * distance_km
     else:
-        # 空驶：空驶强度 * 距离
-        carbon = params["empty_g_per_km"] * distance_km
+        # 公式B：空驶段
+        carbon = v['empty_g_per_km'] * distance_km
 
-    # 新能源车季节修正
-    if params["is_new_energy"]:
-        carbon *= SEASON_FACTOR.get(season_key, 1.00)
-
+    if v['is_new_energy']:
+        carbon *= SEASON_FACTOR[normalized_season]
+    
     return carbon

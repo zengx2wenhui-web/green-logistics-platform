@@ -1,10 +1,17 @@
 """碳排放分析页面。"""
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+
+_APP_ROOT = Path(__file__).resolve().parents[1]
+if str(_APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(_APP_ROOT))
 
 from pages._bottom_nav import render_page_nav
 from pages._ui_shared import (
@@ -20,7 +27,7 @@ from utils.vehicle_lib import VEHICLE_LIB
 
 
 POWER_TYPE_MAPPING = {
-    "diesel_heavy": "柴油重卡",
+    "diesel": "柴油重卡",
     "diesel": "柴油重卡",
     "lng": "LNG天然气重卡",
     "hev": "混合动力 (HEV)",
@@ -41,7 +48,7 @@ def normalize_vehicle_type_id(raw_value: object) -> str:
     value = str(raw_value or "").strip().lower()
     if not value:
         return "unknown"
-    value = value.split("_")[0] if value not in {"diesel_heavy"} else value
+    value = value.split("_")[0] if value not in {"diesel"} else value
     alias_map = {
         "柴油重卡": "diesel",
         "lng天然气重卡": "lng",

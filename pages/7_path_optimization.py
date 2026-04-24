@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 from datetime import datetime
+import sys
+from pathlib import Path
 
 import folium
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 from streamlit_folium import st_folium
+
+_APP_ROOT = Path(__file__).resolve().parents[1]
+if str(_APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(_APP_ROOT))
 
 from pages._bottom_nav import render_page_nav
 from pages._ui_shared import (
@@ -32,7 +38,7 @@ from utils.vehicle_lib import get_vehicle_params
 
 
 VEHICLE_NAME_MAP = {
-    "diesel_heavy": "柴油重卡",
+    "diesel": "柴油重卡",
     "diesel": "柴油重卡",
     "lng": "LNG天然气重卡",
     "hev": "混合动力",

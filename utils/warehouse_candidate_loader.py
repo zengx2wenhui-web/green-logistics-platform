@@ -1,335 +1,241 @@
-"""全国候选仓库加载模块
-
-支持从 data/national_warehouse_candidates.xlsx 加载 120 个真实物流枢纽，
-并基于 Haversine 球面距离计算候选仓与需求点之间的实际物理距离。
-
-核心功能：
-- 加载 Excel 文件中的候选仓库清单（仓库ID、名称、省、市、经度、纬度）
-- 提取经纬度作为候选坐标池
-- 提供 Haversine 距离矩阵构建接口
-"""
-
 import logging
-import os
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional, Any
-
 import pandas as pd
 import numpy as np
 
 logger = logging.getLogger(__name__)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_CANDIDATE_FILE = "data/national_warehouse_candidates.csv"
+STANDARD_COLUMNS = ["warehouse_id", "name", "province", "city", "lng", "lat"]
 
-# 候选仓库文件路径
-_CANDIDATE_FILE_PATH = Path("data/national_warehouse_candidates.xlsx")
+_COLUMN_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "warehouse_id": ("warehouse_id", "仓库ID", "仓库Id", "仓库编号", "ID", "id"),
+    "name": ("name", "仓库名称", "仓库名", "名称"),
+    "province": ("province", "省", "省份"),
+    "city": ("city", "市", "城市"),
+    "lng": ("lng", "lon", "longitude", "经度"),
+    "lat": ("lat", "latitude", "纬度"),
+}
 
 
-# ===================== 数据加载 =====================
+def _candidate_path_variants(file_path: str) -> List[Path]:
+    raw_path = Path(file_path)
+    bases = [Path.cwd(), PROJECT_ROOT]
+    variants: List[Path] = []
 
-def load_candidate_warehouses(
-    file_path: Optional[str] = None,
-) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
-    """从 Excel 或 CSV 文件加载全国候选仓库清单。"""
-    path = Path(file_path) if file_path else _CANDIDATE_FILE_PATH
+    def _add_variant(path: Path) -> None:
+        if path not in variants:
+            variants.append(path)
 
-    # 自动寻找替代的 .csv 文件（如果 .xlsx 不存在）
-    if not path.exists():
-        fallback_csv = path.with_suffix('.csv')
-        if fallback_csv.exists():
-            logger.info(f"未找到 {path.name}，自动切换至读取 {fallback_csv.name}")
-            path = fallback_csv
-        else:
-            error_msg = f"候选仓库文件不存在: {path} (同时也未找到 .csv 格式)"
-            logger.error(error_msg)
-            return None, error_msg
+    def _expand(path: Path) -> None:
+        if path.suffix:
+            _add_variant(path)
+            if path.suffix.lower() != ".csv":
+                _add_variant(path.with_suffix(".csv"))
+            if path.suffix.lower() != ".xlsx":
+                _add_variant(path.with_suffix(".xlsx"))
+            return
 
+        _add_variant(path)
+        _add_variant(path.with_suffix(".csv"))
+        _add_variant(path.with_suffix(".xlsx"))
+
+    if raw_path.is_absolute():
+        _expand(raw_path)
+        return variants
+
+    for base in bases:
+        _expand(base / raw_path)
+    return variants
+
+
+def _resolve_candidate_path(file_path: str = DEFAULT_CANDIDATE_FILE) -> Optional[Path]:
+    for path in _candidate_path_variants(file_path):
+        if path.exists():
+            return path
+    return None
+
+
+def _match_column(columns: List[str], aliases: Tuple[str, ...]) -> Optional[str]:
+    exact_lookup = {str(col).strip(): col for col in columns}
+    normalized_lookup = {str(col).strip().lower(): col for col in columns}
+
+    for alias in aliases:
+        if alias in exact_lookup:
+            return exact_lookup[alias]
+        lowered = alias.strip().lower()
+        if lowered in normalized_lookup:
+            return normalized_lookup[lowered]
+    return None
+
+
+def _standardize_candidate_frame(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    rename_map: Dict[str, str] = {}
+    for standard_name, aliases in _COLUMN_ALIASES.items():
+        matched = _match_column(list(df.columns), aliases)
+        if matched is not None:
+            rename_map[matched] = standard_name
+
+    standardized = df.rename(columns=rename_map).copy()
+
+    if "warehouse_id" not in standardized.columns:
+        standardized["warehouse_id"] = [f"W{i + 1:04d}" for i in range(len(standardized))]
+    if "name" not in standardized.columns:
+        standardized["name"] = standardized["warehouse_id"]
+    if "province" not in standardized.columns:
+        standardized["province"] = ""
+    if "city" not in standardized.columns:
+        standardized["city"] = ""
+
+    missing_coords = [col for col in ("lng", "lat") if col not in standardized.columns]
+    if missing_coords:
+        logger.error(f"候选仓文件缺少坐标列: {missing_coords}")
+        return None
+
+    standardized["warehouse_id"] = standardized["warehouse_id"].astype(str).str.strip()
+    standardized["name"] = standardized["name"].astype(str).str.strip()
+    standardized["province"] = standardized["province"].fillna("").astype(str).str.strip()
+    standardized["city"] = standardized["city"].fillna("").astype(str).str.strip()
+    standardized["lng"] = pd.to_numeric(standardized["lng"], errors="coerce")
+    standardized["lat"] = pd.to_numeric(standardized["lat"], errors="coerce")
+
+    standardized = standardized.dropna(subset=["lng", "lat"]).reset_index(drop=True)
+    if standardized.empty:
+        logger.error("候选仓文件中没有可用的经纬度数据。")
+        return None
+
+    return standardized[STANDARD_COLUMNS]
+
+# 加载候选仓数据
+def load_candidate_warehouses(file_path: str = DEFAULT_CANDIDATE_FILE) -> Optional[pd.DataFrame]:
+    path = _resolve_candidate_path(file_path)
+    if path is None:
+        logger.error(f"找不到候选仓文件: {file_path}")
+        return None
     try:
-        # 根据文件后缀智能选择读取引擎
-        if path.suffix.lower() == '.csv':
-            df = pd.read_csv(path)
-        else:
-            df = pd.read_excel(path)
-            
-        logger.info(f"[候选仓库] 成功加载 {len(df)} 个仓库")
-        return df, None
+        return pd.read_csv(path) if path.suffix == '.csv' else pd.read_excel(path)
     except Exception as e:
-        error_msg = f"加载候选仓库文件失败: {str(e)}"
-        logger.error(error_msg)
-        return None, error_msg
+        logger.error(f"读取文件失败: {e}")
+        return None
 
-
-# ===================== 坐标池提取 =====================
-
-def extract_candidate_coords(
-    df: pd.DataFrame,
-    lng_col: str = "经度",
-    lat_col: str = "纬度",
-    validate: bool = True,
-) -> Tuple[List[Tuple[float, float]], Optional[str]]:
-    """
-    从DataFrame中提取经纬度坐标作为候选坐标池。
-
-    Args:
-        df: 候选仓库数据框
-        lng_col: 经度列名
-        lat_col: 纬度列名
-        validate: 是否进行坐标校验
-
-    Returns:
-        (坐标列表, None) | (None, 错误信息)
-    """
-    try:
-        # 列名检查
-        if lng_col not in df.columns or lat_col not in df.columns:
-            error_msg = f"数据框缺少必要列: {lng_col} 或 {lat_col}"
-            logger.error(error_msg)
-            return None, error_msg
-
-        # 提取坐标
-        coords = list(zip(df[lng_col].astype(float), df[lat_col].astype(float)))
-
-        if validate:
-            # 坐标范围校验（中国范围）
-            valid_coords = []
-            for i, (lng, lat) in enumerate(coords):
-                if not (73 <= lng <= 135 and 3 <= lat <= 54):
-                    logger.warning(
-                        f"[坐标校验] 仓库{i}坐标超出中国范围: lng={lng}, lat={lat}"
-                    )
-                    continue
-                valid_coords.append((lng, lat))
-
-            if len(valid_coords) < len(coords):
-                logger.warning(
-                    f"[坐标校验] 有效坐标 {len(valid_coords)} / {len(coords)}"
-                )
-            coords = valid_coords
-
-        logger.info(f"[坐标池] 提取 {len(coords)} 个候选坐标")
-        return coords, None
-
-    except Exception as e:
-        error_msg = f"提取坐标失败: {str(e)}"
-        logger.error(error_msg)
-        return None, error_msg
-
-
-# ===================== 候选仓库信息构建 =====================
-
-def build_warehouse_nodes(
-    df: pd.DataFrame,
-    id_col: str = "仓库ID",
-    name_col: str = "仓库名称",
-    lng_col: str = "经度",
-    lat_col: str = "纬度",
-    province_col: str = "省",
-    city_col: str = "市",
-) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    """
-    从DataFrame构建仓库节点信息（含元数据）。
-
-    Args:
-        df: 候选仓库数据框
-        id_col, name_col, lng_col, lat_col: 列名映射
-        province_col, city_col: 省市列名
-
-    Returns:
-        (节点列表, None) | (None, 错误信息)
-    """
-    try:
-        nodes = []
-        for idx, row in df.iterrows():
-            # 坐标范围校验
-            lng = float(row[lng_col])
-            lat = float(row[lat_col])
-            if not (73 <= lng <= 135 and 3 <= lat <= 54):
-                logger.warning(f"跳过超范围坐标: {row.get(name_col)}")
-                continue
-
-            node = {
-                "warehouse_id": str(row[id_col]),
-                "name": str(row[name_col]),
-                "lng": lng,
-                "lat": lat,
-                "province": str(row[province_col]),
-                "city": str(row[city_col]),
-                "type": "warehouse",
-                "source": "national_candidates",
-            }
-            nodes.append(node)
-
-        logger.info(f"[仓库节点] 构建 {len(nodes)} 个仓库节点")
-        return nodes, None
-
-    except Exception as e:
-        error_msg = f"构建仓库节点失败: {str(e)}"
-        logger.error(error_msg)
-        return None, error_msg
-
-
-# ===================== Haversine 距离矩阵 =====================
-
-def haversine_distance(
-    lng1: float, lat1: float,
-    lng2: float, lat2: float,
-) -> float:
-    """
-    Haversine 公式计算球面直线距离（km）。
-
-    Args:
-        lng1, lat1: 起点经纬度
-        lng2, lat2: 终点经纬度
-
-    Returns:
-        直线距离（km）
-    """
-    R = 6371.0
-    lat1_r = np.radians(lat1)
-    lat2_r = np.radians(lat2)
-    dlat = lat2_r - lat1_r
-    dlng = np.radians(lng2 - lng1)
-    a = (
-        np.sin(dlat / 2) ** 2
-        + np.cos(lat1_r) * np.cos(lat2_r) * np.sin(dlng / 2) ** 2
-    )
-    return R * 2 * np.arcsin(np.sqrt(a))
-
-
-def haversine_matrix(
-    coords_a: np.ndarray, coords_b: np.ndarray
-) -> np.ndarray:
-    """
-    向量化 Haversine 球面距离矩阵计算。
-
-    Args:
-        coords_a: shape=(M, 2) 坐标数组 [[lng, lat], ...] （候选仓库或需求点）
-        coords_b: shape=(N, 2) 坐标数组 [[lng, lat], ...] （需求点或候选仓库）
-
-    Returns:
-        shape=(M, N) 距离矩阵（km）
-    """
-    # 转为弧度
-    lat_a = np.radians(coords_a[:, 1])[:, None]  # shape=(M, 1)
-    lon_a = np.radians(coords_a[:, 0])[:, None]  # shape=(M, 1)
-    lat_b = np.radians(coords_b[:, 1])[None, :]  # shape=(1, N)
-    lon_b = np.radians(coords_b[:, 0])[None, :]  # shape=(1, N)
-
-    # 纬度、经度差
-    dlat = lat_b - lat_a  # shape=(M, N)
-    dlon = lon_b - lon_a  # shape=(M, N)
-
-    # Haversine 公式
-    a = (
-        np.sin(dlat / 2) ** 2
-        + np.cos(lat_a) * np.cos(lat_b) * np.sin(dlon / 2) ** 2
-    )
-    distances = 2 * 6371 * np.arcsin(np.sqrt(a))  # shape=(M, N)
-
-    return distances
-
-
-def compute_distance_to_candidates(
-    demand_coords: List[Tuple[float, float]],
-    candidate_coords: List[Tuple[float, float]],
-) -> Tuple[np.ndarray, Optional[str]]:
-    """
-    计算需求点到候选仓库的 Haversine 距离矩阵。
-
-    Args:
-        demand_coords: 需求点坐标列表 [(lng, lat), ...]
-        candidate_coords: 候选仓库坐标列表 [(lng, lat), ...]
-
-    Returns:
-        (距离矩阵 shape=(M, N) 单位km, None) | (None, 错误信息)
-    """
-    try:
-        if not demand_coords or not candidate_coords:
-            return None, "坐标列表为空"
-
-        demand_arr = np.array(demand_coords, dtype=np.float64)  # shape=(M, 2)
-        candidate_arr = np.array(candidate_coords, dtype=np.float64)  # shape=(N, 2)
-
-        dist_matrix = haversine_matrix(demand_arr, candidate_arr)
-        logger.info(
-            f"[距离矩阵] 计算 {len(demand_coords)}×{len(candidate_coords)} "
-            f"Haversine 距离矩阵"
-        )
-        return dist_matrix, None
-
-    except Exception as e:
-        error_msg = f"计算距离矩阵失败: {str(e)}"
-        logger.error(error_msg)
-        return None, error_msg
-
-
-# ===================== 高层封装 =====================
 
 def load_and_prepare_candidates(
-    file_path: Optional[str] = None,
-    validate_coords: bool = True,
-) -> Tuple[Optional[List[Dict]], Optional[List[Tuple[float, float]]], Optional[str]]:
-    """
-    一站式加载并准备候选仓库。
+    file_path: str = DEFAULT_CANDIDATE_FILE,
+) -> Tuple[List[Dict[str, Any]], List[Tuple[float, float]], Optional[str]]:
+    candidates = load_candidate_warehouses(file_path)
+    if candidates is None or candidates.empty:
+        return [], [], "候选仓数据为空或读取失败。"
 
-    Args:
-        file_path: 文件路径
-        validate_coords: 是否进行坐标校验
+    standardized = _standardize_candidate_frame(candidates)
+    if standardized is None or standardized.empty:
+        return [], [], "候选仓数据缺少有效的经纬度列。"
 
-    Returns:
-        (仓库节点列表, 坐标列表, None) | (None, None, 错误信息)
-    """
-    # Step 1: 加载Excel
-    df, err = load_candidate_warehouses(file_path)
-    if df is None:
-        return None, None, err
+    nodes: List[Dict[str, Any]] = []
+    candidate_coords: List[Tuple[float, float]] = []
 
-    # Step 2: 构建仓库节点
-    nodes, err = build_warehouse_nodes(df)
-    if nodes is None:
-        return None, None, err
+    for row in standardized.to_dict(orient="records"):
+        lng = float(row["lng"])
+        lat = float(row["lat"])
+        nodes.append(
+            {
+                "warehouse_id": row["warehouse_id"],
+                "name": row["name"],
+                "province": row["province"],
+                "city": row["city"],
+                "lng": lng,
+                "lat": lat,
+            }
+        )
+        candidate_coords.append((lng, lat))
 
-    # Step 3: 提取坐标
-    coords, err = extract_candidate_coords(df, validate=validate_coords)
-    if coords is None:
-        return None, None, err
+    return nodes, candidate_coords, None
 
-    logger.info(
-        f"[候选仓库准备完成] 节点数={len(nodes)}, 坐标数={len(coords)}"
-    )
-    return nodes, coords, None
 
+# 距离计算 Haversine 公式
+def haversine_matrix(coords_a: np.ndarray, coords_b: np.ndarray) -> np.ndarray:
+    """计算两组经纬度点之间的球面距离矩阵"""
+    lat_a = np.radians(coords_a[:, 1])[:, None]
+    lon_a = np.radians(coords_a[:, 0])[:, None]
+    lat_b = np.radians(coords_b[:, 1])[None, :]
+    lon_b = np.radians(coords_b[:, 0])[None, :]
+    
+    dlat = lat_b - lat_a
+    dlon = lon_b - lon_a
+    a = np.sin(dlat/2)**2 + np.cos(lat_a) * np.cos(lat_b) * np.sin(dlon/2)**2
+    return 2 * 6371 * np.arcsin(np.sqrt(a))
+
+
+# K-Medoids 贪心逻辑
+def select_warehouses(weighted_dist: np.ndarray, k: int) -> List[int]:
+    """基于需求加权距离矩阵，贪心选出 K 个使总代价最小的中心点"""
+    selected = []
+    remaining = list(range(weighted_dist.shape[0]))  # 候选仓的索引池
+    assigned_min = np.full(weighted_dist.shape[1], np.inf) # 每个场馆当前的最短距离
+    
+    for _ in range(k):
+        best_idx, best_score = None, np.inf
+        for c in remaining:
+            # 假设选了仓库 c，场馆的距离更新为 现在的距离 和 选 c 的距离 中的较小值
+            new_min = np.minimum(assigned_min, weighted_dist[c])
+            score = new_min.sum()
+            
+            if score < best_score:
+                best_score, best_idx = score, c
+                
+        selected.append(best_idx)
+        remaining.remove(best_idx)
+        assigned_min = np.minimum(assigned_min, weighted_dist[best_idx])
+        
+    return selected
+
+
+# 主函数：执行选址流程
+def run_k_medoids_selection(
+    venues_df: pd.DataFrame, 
+    k: int = 3, 
+    candidates_path: str = DEFAULT_CANDIDATE_FILE
+) -> Optional[pd.DataFrame]:
+    # 1. 加载候选点
+    candidates = load_candidate_warehouses(candidates_path)
+    if candidates is None:
+        return None
+
+    standardized_candidates = _standardize_candidate_frame(candidates)
+    if standardized_candidates is None:
+        return None
+    
+    # 2. 提取坐标与权重
+    try:
+        candidate_coords = standardized_candidates[['lng', 'lat']].values
+        venue_coords = venues_df[['经度', '纬度']].values
+        venue_demands = venues_df['总需求kg'].values
+    except KeyError as e:
+        logger.error(f"数据框缺少必要的列: {e}")
+        return None
+
+    # 3. 计算 Haversine 距离矩阵
+    dist_matrix = haversine_matrix(candidate_coords, venue_coords)
+    
+    # 4. 加入物资需求权重
+    weighted_dist = dist_matrix * venue_demands[np.newaxis, :]
+    
+    # 5. 执行选址算法
+    selected_idx = select_warehouses(weighted_dist, k)
+    
+    # 6. 返回选中的仓库信息
+    selected_warehouses = standardized_candidates.iloc[selected_idx].copy()
+    logger.info(f"成功选出 {k} 个中转仓。")
+    
+    return selected_warehouses.rename(
+        columns={
+            "name": "仓库名称",
+            "province": "省",
+            "city": "市",
+            "lng": "经度",
+            "lat": "纬度",
+        }
+    )[['仓库名称', '省', '市', '经度', '纬度']]
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-
-    print("=" * 60)
-    print("测试候选仓库加载")
-    print("=" * 60)
-
-    # 测试数据加载
-    nodes, coords, err = load_and_prepare_candidates()
-    if err:
-        print(f"错误: {err}")
-    else:
-        print(f"\n✓ 加载成功")
-        print(f"  仓库数: {len(nodes)}")
-        print(f"  坐标数: {len(coords)}")
-
-        if nodes:
-            print(f"\n首个仓库信息:")
-            for key, value in nodes[0].items():
-                print(f"  {key}: {value}")
-
-        if coords:
-            print(f"\n前3个坐标:")
-            for i, (lng, lat) in enumerate(coords[:3]):
-                print(f"  坐标{i}: lng={lng:.4f}, lat={lat:.4f}")
-
-        # 测试距离矩阵计算
-        print(f"\n测试距离矩阵计算...")
-        test_demand = [(coords[0][0] + 0.1, coords[0][1] + 0.1)]
-        dist_mat, err = compute_distance_to_candidates(test_demand, coords[:5])
-        if err:
-            print(f"错误: {err}")
-        else:
-            print(f"✓ 距离矩阵构建成功 shape={dist_mat.shape}")
-            print(f"  需求点到前5个候选仓的距离: {dist_mat[0]}")
+   pass

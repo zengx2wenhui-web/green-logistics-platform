@@ -1,15 +1,4 @@
-"""距离矩阵构建模块
-
-支持双轨制距离获取：高德 API 实际驾车距离（首选）+ Haversine 降级估算（备用）。
-构建结果同时包含距离矩阵与时间矩阵，为后续 VRP 时间窗扩展奠定基础。
-
-核心优化：
-- 集成高德批量距离测量 API（/v3/distance），将数千次请求压缩至几十次
-- SQLite 持久化缓存（模块级单例连接），防止配额耗尽与重复计算
-- 同时输出 distance_matrix 与 time_matrix
-- 支持带节点类型标签的输入（仓库 / 中转仓 / 配送点）
-- Haversine 降级方案支持 numpy 向量化加速
-"""
+# 距离矩阵构建模块
 import math
 import sqlite3
 import hashlib
@@ -28,23 +17,11 @@ _CACHE_DB_PATH: Path = Path("data/cache/distance_cache.db")
 # 模块级单例连接
 _db_conn: Optional[sqlite3.Connection] = None
 
-
-# ===================== Haversine 直线距离 =====================
-
+# Haversine 直线距离 
 def haversine_distance(
     lng1: float, lat1: float,
     lng2: float, lat2: float,
 ) -> float:
-    """
-    Haversine 公式计算球面直线距离（km）。
-
-    Args:
-        lng1, lat1: 起点经纬度
-        lng2, lat2: 终点经纬度
-
-    Returns:
-        直线距离（km）
-    """
     R = 6371.0
     lat1_r, lat2_r = math.radians(lat1), math.radians(lat2)
     dlat = lat2_r - lat1_r
@@ -54,19 +31,10 @@ def haversine_distance(
     return R * 2 * math.asin(math.sqrt(a))
 
 
+# 向量化 Haversine 距离矩阵计算
 def haversine_matrix_vectorized(
     lngs: np.ndarray, lats: np.ndarray,
 ) -> np.ndarray:
-    """
-    向量化 Haversine：一次性计算 N×N 距离矩阵。
-
-    Args:
-        lngs: shape=(N,) 经度数组
-        lats: shape=(N,) 纬度数组
-
-    Returns:
-        shape=(N, N) 距离矩阵（km）
-    """
     R = 6371.0
     lats_r = np.radians(lats)
     lngs_r = np.radians(lngs)
@@ -80,35 +48,21 @@ def haversine_matrix_vectorized(
     return R * 2 * np.arcsin(np.sqrt(a))
 
 
+# 通用向量化 Haversine 距离矩阵计算
 def haversine_matrix_general(
     coords_a: np.ndarray,
     coords_b: np.ndarray,
 ) -> np.ndarray:
-    """
-    通用向量化 Haversine 距离矩阵计算（支持 M×N 矩阵）。
-
-    用于计算两个不同坐标集合间的距离矩阵，如候选仓库到需求点的距离。
-
-    Args:
-        coords_a: shape=(M, 2)，行为 [lng, lat]，如候选仓库集合
-        coords_b: shape=(N, 2)，行为 [lng, lat]，如需求点集合
-
-    Returns:
-        shape=(M, N) 距离矩阵（km），其中 (i,j) 为 coords_a[i] 到 coords_b[j] 的距离
-    """
     R = 6371.0
 
-    # 转为弧度
     lat_a = np.radians(coords_a[:, 1])[:, None]  # shape=(M, 1)
     lon_a = np.radians(coords_a[:, 0])[:, None]  # shape=(M, 1)
     lat_b = np.radians(coords_b[:, 1])[None, :]  # shape=(1, N)
     lon_b = np.radians(coords_b[:, 0])[None, :]  # shape=(1, N)
 
-    # 计算差值 shape=(M, N)
     dlat = lat_b - lat_a
     dlon = lon_b - lon_a
 
-    # Haversine 公式
     a = (
         np.sin(dlat / 2) ** 2
         + np.cos(lat_a) * np.cos(lat_b) * np.sin(dlon / 2) ** 2
@@ -118,10 +72,8 @@ def haversine_matrix_general(
     return distances
 
 
-# ===================== SQLite 缓存层 =====================
-
+# SQLite 缓存层 
 def _get_cache_conn() -> sqlite3.Connection:
-    """获取模块级单例 SQLite 缓存连接。"""
     global _db_conn
     if _db_conn is None:
         _CACHE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -140,23 +92,23 @@ def _get_cache_conn() -> sqlite3.Connection:
     return _db_conn
 
 
+# 初始化缓存数据库
 def _init_cache_db() -> sqlite3.Connection:
-    """初始化 SQLite 缓存数据库，返回连接（兼容旧调用）。"""
     return _get_cache_conn()
 
 
+# 生成坐标对的唯一缓存键
 def _pair_key(lng1: float, lat1: float, lng2: float, lat2: float) -> str:
-    """生成坐标对的唯一缓存键。"""
     raw = f"{lng1:.6f},{lat1:.6f},{lng2:.6f},{lat2:.6f}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 
+# 查询缓存中的距离和时间
 def _query_cache(
     conn: sqlite3.Connection,
     lng1: float, lat1: float,
     lng2: float, lat2: float,
 ) -> Optional[Tuple[float, float]]:
-    """查询缓存中的距离和时间。"""
     key = _pair_key(lng1, lat1, lng2, lat2)
     row = conn.execute(
         "SELECT distance_km, duration_min FROM distance_cache WHERE pair_key=?",
@@ -165,6 +117,7 @@ def _query_cache(
     return (row[0], row[1]) if row else None
 
 
+# 向缓存写入一条记录
 def _write_cache(
     conn: sqlite3.Connection,
     lng1: float, lat1: float,
@@ -172,7 +125,6 @@ def _write_cache(
     distance_km: float, duration_min: float,
     source: str = "api",
 ) -> None:
-    """向缓存写入一条记录。"""
     key = _pair_key(lng1, lat1, lng2, lat2)
     conn.execute(
         """INSERT OR REPLACE INTO distance_cache
@@ -183,8 +135,7 @@ def _write_cache(
     conn.commit()
 
 
-# ===================== 距离矩阵构建结果 =====================
-
+# 距离矩阵构建结果
 @dataclass
 class DistanceMatrixResult:
     """距离矩阵构建结果，同时包含距离与时间矩阵。"""
@@ -196,12 +147,11 @@ class DistanceMatrixResult:
     fallback_count: int = 0
 
     def to_list(self) -> List[List[float]]:
-        """将距离矩阵转为二维列表（兼容旧接口）。"""
+        """将距离矩阵转为二维列表 """
         return self.distance_matrix.tolist()
 
 
-# ===================== 核心矩阵构建 =====================
-
+# 核心矩阵构建
 def build_distance_matrix(
     nodes: List[Dict[str, Any]],
     road_factor: float = 1.4,
@@ -209,25 +159,6 @@ def build_distance_matrix(
     use_api: bool = False,
     progress_callback: Optional[Callable[[float, str], None]] = None,
 ) -> DistanceMatrixResult:
-    """
-    构建 N×N 距离矩阵与时间矩阵。
-
-    双轨策略：
-    1. 若 use_api=True 且提供有效 api_key，使用高德批量距离 API 获取真实路网距离，
-       并将结果缓存到 SQLite；
-    2. 否则使用 Haversine × road_factor 估算。
-
-    Args:
-        nodes: 节点列表，每项至少含 {"lng": ..., "lat": ...}，
-               可选 {"name": ..., "type": "warehouse|hub|venue"}
-        road_factor: 路网弯曲系数（仅 Haversine 模式生效），建议 1.3~1.5
-        api_key: 高德 API 密钥
-        use_api: 是否启用高德 API
-        progress_callback: 进度回调 (progress: float, message: str)
-
-    Returns:
-        DistanceMatrixResult 对象
-    """
     n = len(nodes)
     dist_mat = np.zeros((n, n))
     time_mat = np.zeros((n, n))
@@ -250,7 +181,7 @@ def build_distance_matrix(
             from utils.amap_api import batch_distance_one_to_many
 
             for i in range(n):
-                # 收集需要查询的目标节点（排除缓存已有的）
+                # 收集需要查询的目标节点
                 targets_idx: List[int] = []
                 targets_coords: List[Tuple[float, float]] = []
 
@@ -341,24 +272,12 @@ def build_distance_matrix(
     )
 
 
-# ===================== 兼容旧接口 =====================
-
+# 兼容旧接口
 def build_distance_matrix_from_coords(
     coords: List[Tuple[float, float]],
     road_factor: float = 1.4,
     progress_callback: Optional[Callable[[float, str], None]] = None,
 ) -> List[List[float]]:
-    """
-    使用 Haversine 公式构建距离矩阵（兼容旧接口）。
-
-    Args:
-        coords: 坐标列表 [(lng, lat), ...]
-        road_factor: 路网系数
-        progress_callback: 进度回调
-
-    Returns:
-        N×N 二维列表（km）
-    """
     nodes = [{"lng": c[0], "lat": c[1]} for c in coords]
     result = build_distance_matrix(
         nodes, road_factor=road_factor,
@@ -367,10 +286,8 @@ def build_distance_matrix_from_coords(
     return result.to_list()
 
 
-# ===================== 矩阵统计 =====================
-
+# 矩阵统计
 def get_matrix_info(matrix: List[List[float]]) -> Dict[str, Any]:
-    """获取距离矩阵统计信息。"""
     n = len(matrix)
     if n == 0:
         return {"size": "0×0", "total": 0, "avg": 0, "max": 0, "min": 0}
@@ -388,41 +305,5 @@ def get_matrix_info(matrix: List[List[float]]) -> Dict[str, Any]:
     }
 
 
-# ===================== 测试入口 =====================
-
 if __name__ == "__main__":
-    print("=== 距离矩阵模块测试 ===")
-
-    test_coords = [
-        (113.2644, 23.1291),
-        (113.2650, 23.1320),
-        (113.2700, 23.1280),
-        (113.2600, 23.1350),
-        (113.2680, 23.1250),
-    ]
-
-    def progress(prog: float, msg: str) -> None:
-        print(f"[进度 {prog * 100:.1f}%] {msg}")
-
-    # Haversine 模式
-    matrix = build_distance_matrix_from_coords(
-        test_coords, road_factor=1.4, progress_callback=progress,
-    )
-
-    print("\n距离矩阵:")
-    for i, row in enumerate(matrix):
-        print(f"  节点{i}: {[round(v, 2) for v in row]}")
-
-    info = get_matrix_info(matrix)
-    print(f"\n统计信息: {info}")
-
-    # 带节点类型标签的构建
-    nodes = [
-        {"name": "总仓库", "type": "warehouse", "lng": 113.2644, "lat": 23.1291},
-        {"name": "场馆A", "type": "venue", "lng": 113.2650, "lat": 23.1320},
-        {"name": "场馆B", "type": "venue", "lng": 113.2700, "lat": 23.1280},
-    ]
-    result = build_distance_matrix(nodes, road_factor=1.4)
-    print(f"\n节点标签: {result.node_labels}")
-    print(f"距离矩阵:\n{result.distance_matrix}")
-    print(f"时间矩阵:\n{result.time_matrix}")
+    pass

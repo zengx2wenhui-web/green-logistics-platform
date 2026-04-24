@@ -1,10 +1,3 @@
-"""
-加权 K-Medoids 聚类模块 — 全国中转仓选址
-
-核心优化：
-- 全面采用 Haversine 球面距离
-- 采用 K-Medoids (PAM) 算法，确保选出的中转仓绝对是现实中可用的真实物流园
-"""
 import numpy as np
 import logging
 from typing import List, Tuple, Dict, Optional, Callable
@@ -13,18 +6,15 @@ import warnings
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
 
-# ===================== 距离算法 =====================
-
+# 距离算法
 def haversine_distance(lng1: float, lat1: float, lng2: float, lat2: float) -> float:
-    """计算单点对单点的 Haversine 球面距离（公里）"""
     lat1, lng1, lat2, lng2 = map(np.radians, [lat1, lng1, lat2, lng2])
     dlat = lat2 - lat1
     dlng = lng2 - lng1
     a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlng/2)**2
     return 2 * 6371 * np.arcsin(np.sqrt(a))
 
-# ===================== 需求聚合器 =====================
-
+# 需求聚合器
 def aggregate_demands(multi_category_demands: Dict[int, Dict[str, float]]) -> List[float]:
     """将多品类需求矩阵压扁为一维总重量列表"""
     if not multi_category_demands:
@@ -35,11 +25,8 @@ def aggregate_demands(multi_category_demands: Dict[int, Dict[str, float]]) -> Li
         result[idx] = sum(categories.values())
     return result
 
-# ===================== 加权 K-Medoids 聚类器 =====================
-
+# 加权 K-Medoids 聚类器
 class WeightedKMedoids:
-    """K-Medoids 聚类器，中心点必须来源于提供的真实候选集。"""
-
     def __init__(self, n_clusters: int = 3):
         self.n_clusters: int = n_clusters
         self.medoids_: Optional[np.ndarray] = None
@@ -135,8 +122,7 @@ class WeightedKMedoids:
         return self.labels_.tolist() if self.labels_ is not None else []
 
 
-# ===================== 核心选址主逻辑 =====================
-
+# 核心选址主逻辑
 def find_optimal_k_kmedoids(
     coords: List[Tuple[float, float]], weights: List[float], candidates: List[Tuple[float, float]], k_range: range
 ) -> Dict:
@@ -209,8 +195,7 @@ def select_warehouse_locations(
     return {"optimal_k": optimal_k, "total_weighted_distance": result.get("total_weighted_distance", 0), "warehouses": warehouses, "venue_assignments": venue_assignments, "total_weight": sum(weights), "algorithm": "K-Medoids"}
 
 
-# ===================== 候选仓库集成与元数据匹配 =====================
-
+# 候选仓库集成与元数据匹配
 def select_warehouse_from_national_candidates(
     venue_coords: List[Tuple[float, float]], venue_weights: List[float], max_warehouses: int = 6
 ) -> Tuple[Optional[Dict], Optional[str]]:
@@ -237,8 +222,8 @@ def select_warehouse_from_national_candidates(
                 if matched_node:
                     wh["nearest_candidate_id"] = matched_node.get("warehouse_id", "未知ID")
                     wh["nearest_candidate_name"] = matched_node.get("name", "未命名物流园")
-                    wh["province"] = matched_node.get("省", "")
-                    wh["city"] = matched_node.get("市", "")
+                    wh["province"] = matched_node.get("province", matched_node.get("省", ""))
+                    wh["city"] = matched_node.get("city", matched_node.get("市", ""))
                 else:
                     wh["nearest_candidate_name"] = "数据匹配失败"
                     
@@ -250,8 +235,7 @@ def select_warehouse_from_national_candidates(
         return None, error_msg
 
 
-# ===================== 报告打印与测试 =====================
-
+# 报告打印与测试
 def print_clustering_report(result: Dict) -> None:
     print("\n" + "=" * 60)
     print(f"中转仓选址报告 (算法: {result.get('algorithm', '未知')})")
@@ -274,5 +258,4 @@ def print_clustering_report(result: Dict) -> None:
         print(f"场馆{va['venue_idx']} 需求{va['weight']:.0f}kg -> 分配至仓库{va['warehouse_idx'] + 1}")
 
 if __name__ == "__main__":
-    print("=== 全国候选集 K-Medoids 中转仓选址测试 ===\n")
     pass

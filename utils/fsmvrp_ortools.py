@@ -18,15 +18,9 @@ class FleetEntry:
 
 def _expand_vehicle_pool(
     fleet: List[FleetEntry],
+    capacity_multiplier: int = 1000,
 ) -> Tuple[List[int], List[str], List[float]]:
-    """Expand fleet entries into a per-vehicle pool.
-
-    Returns:
-        vehicle_capacities_kg: list length num_vehicles
-        vehicle_types: list length num_vehicles (vehicle_type ids)
-        vehicle_load_ton: list length num_vehicles (user-entered load ton)
-    """
-    vehicle_capacities_kg: List[int] = []
+    vehicle_capacities_scaled: List[int] = []
     vehicle_types: List[str] = []
     vehicle_load_ton: List[float] = []
 
@@ -35,13 +29,16 @@ def _expand_vehicle_pool(
             continue
         if entry.load_ton <= 0:
             continue
-        cap_kg = int(round(entry.load_ton * 1000))
+        
+        # entry.load_ton * 1000 换算为 kg，再乘以 multiplier 提升精度以防抹零
+        cap_scaled = int(round(entry.load_ton * 1000 * capacity_multiplier))
+        
         for _ in range(int(entry.count_max)):
-            vehicle_capacities_kg.append(cap_kg)
+            vehicle_capacities_scaled.append(cap_scaled)
             vehicle_types.append(entry.vehicle_type)
             vehicle_load_ton.append(float(entry.load_ton))
 
-    return vehicle_capacities_kg, vehicle_types, vehicle_load_ton
+    return vehicle_capacities_scaled, vehicle_types, vehicle_load_ton
 
 
 def solve_fsmvrp_ortools(
@@ -54,19 +51,6 @@ def solve_fsmvrp_ortools(
     season: str = "夏",
     h2_source: str = "工业副产氢",
 ) -> Optional[Dict]:
-    """
-    Fleet Size & Mix VRP (FSMVRP) using OR-Tools heterogeneous fleet.
-
-    This solver treats user-provided counts as **upper bounds**. Vehicles not used
-    in the solution are idle (not counted in carbon / fixed costs).
-
-    Cost model (integer grams CO2):
-    - Per-arc cost: distance_km * (emission_factor_kg_per_ton_km * load_ton) * 1000
-      i.e. a per-km carbon cost under an assumed constant load equal to the user
-      entered load capacity. This keeps costs comparable across vehicle types
-      without requiring stateful callbacks.
-    - Fixed cost per used vehicle: cold-start grams CO2 by vehicle type.
-    """
     if not distance_matrix_km or not demands_kg:
         return None
     if len(distance_matrix_km) != len(demands_kg):
@@ -85,17 +69,24 @@ def solve_fsmvrp_ortools(
         except Exception:
             continue
 
-    vehicle_capacities_kg, vehicle_types, vehicle_load_ton = _expand_vehicle_pool(fleet_entries)
+    # 定义统一的精度放大系数
+    CAPACITY_MULTIPLIER = 1000
+
+    vehicle_capacities_scaled, vehicle_types, vehicle_load_ton = _expand_vehicle_pool(
+        fleet_entries, 
+        capacity_multiplier=CAPACITY_MULTIPLIER
+    )
+    
     num_locations = len(distance_matrix_km)
-    num_vehicles = len(vehicle_capacities_kg)
+    num_vehicles = len(vehicle_capacities_scaled)
     if num_vehicles <= 0:
         return None
 
     manager = pywrapcp.RoutingIndexManager(num_locations, num_vehicles, depot)
     routing = pywrapcp.RoutingModel(manager)
 
-    # Demands callback (kg, must be int for capacity dimension)
-    demands_int = [int(round(x)) for x in demands_kg]
+    # Demands callback (同步放大相同的倍数，防止小数被抹零)
+    demands_int = [int(round(x * CAPACITY_MULTIPLIER)) for x in demands_kg]
 
     def demand_callback(from_index: int) -> int:
         node = manager.IndexToNode(from_index)
@@ -104,19 +95,17 @@ def solve_fsmvrp_ortools(
     demand_cb_idx = routing.RegisterUnaryTransitCallback(demand_callback)
     routing.AddDimensionWithVehicleCapacity(
         demand_cb_idx,
-        0,  # slack
-        vehicle_capacities_kg,
-        True,  # start cumul to zero
+        0, 
+        vehicle_capacities_scaled, 
+        True, 
         "Capacity",
     )
 
-    # Distance callback (km -> store float, convert in per-vehicle cost callbacks)
     def distance_km(from_index: int, to_index: int) -> float:
         from_node = manager.IndexToNode(from_index)
         to_node = manager.IndexToNode(to_index)
         return float(distance_matrix_km[from_node][to_node])
 
-    # Register one callback per vehicle type+load (since user-entered loads can differ per type).
     evaluator_cache: Dict[Tuple[str, float], int] = {}
 
     def get_arc_cost_evaluator(vtype: str, load_ton: float) -> int:
@@ -191,7 +180,7 @@ def solve_fsmvrp_ortools(
         while not routing.IsEnd(index):
             route.append(manager.IndexToNode(index))
             index = solution.Value(routing.NextVar(index))
-        route.append(manager.IndexToNode(index))  # end node (depot)
+        route.append(manager.IndexToNode(index))
         route_vehicle_ids.append(v_id)
         routes.append(route)
 
@@ -203,29 +192,10 @@ def solve_fsmvrp_ortools(
         "num_vehicles_used": sum(1 for x in vehicle_used if x),
         "vehicle_used_flags": vehicle_used,
         "vehicle_types": vehicle_types,
-        "vehicle_capacities_kg": vehicle_capacities_kg,
+        "vehicle_capacities_kg": [c // CAPACITY_MULTIPLIER for c in vehicle_capacities_scaled], # 还原回kg对外输出
         "fleet_used_by_type": used_count_by_type,
     }
 
 
 if __name__ == "__main__":
-    # Minimal verification: same demands, different user-entered load -> different vehicles used.
-    # This is not a unit test runner, just a quick sanity check for developers.
-    dm = [
-        [0.0, 10.0, 10.0, 10.0, 10.0],
-        [10.0, 0.0, 2.0, 2.0, 2.0],
-        [10.0, 2.0, 0.0, 2.0, 2.0],
-        [10.0, 2.0, 2.0, 0.0, 2.0],
-        [10.0, 2.0, 2.0, 2.0, 0.0],
-    ]
-    demands = [0, 15000, 15000, 15000, 15000]  # total 60t
-
-    fleet_20t = [{"vehicle_type": "diesel_heavy", "load_ton": 20, "count_max": 10}]
-    fleet_30t = [{"vehicle_type": "diesel_heavy", "load_ton": 30, "count_max": 10}]
-
-    r20 = solve_fsmvrp_ortools(distance_matrix_km=dm, demands_kg=demands, fleet=fleet_20t, time_limit_seconds=2)
-    r30 = solve_fsmvrp_ortools(distance_matrix_km=dm, demands_kg=demands, fleet=fleet_30t, time_limit_seconds=2)
-
-    print("20t used:", None if not r20 else r20.get("fleet_used_by_type"))
-    print("30t used:", None if not r30 else r30.get("fleet_used_by_type"))
-
+    pass

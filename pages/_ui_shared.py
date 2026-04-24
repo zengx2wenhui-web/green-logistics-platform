@@ -49,18 +49,24 @@ def render_download_button(
     key: str,
     width: str = "stretch",
     disabled: bool = False,
-) -> bool:
-    """Render download buttons without rerunning the page and invalidating media URLs."""
-    return st.download_button(
-        label=label,
-        data=data,
-        file_name=file_name,
-        mime=mime,
-        key=key,
-        on_click="ignore",
-        disabled=disabled,
-        width=width,
-    )
+) -> None:
+    """Render download buttons in a fragment to keep media URLs stable across reruns."""
+    payload = data.encode("utf-8") if isinstance(data, str) else data
+
+    @st.fragment
+    def _render() -> None:
+        st.download_button(
+            label=label,
+            data=payload,
+            file_name=file_name,
+            mime=mime,
+            key=key,
+            on_click="ignore",
+            disabled=disabled,
+            width=width,
+        )
+
+    _render()
 
 
 def _get_sidebar_summary() -> dict[str, int | float | bool]:

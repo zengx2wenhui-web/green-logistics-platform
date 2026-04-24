@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 
 import folium
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 from streamlit_folium import st_folium
+
+_APP_ROOT = Path(__file__).resolve().parents[1]
+if str(_APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(_APP_ROOT))
 
 from pages._bottom_nav import render_page_nav
 from pages._ui_shared import (
@@ -30,7 +36,7 @@ from utils.route_display import (
 
 
 VEHICLE_NAME_MAP = {
-    "diesel_heavy": "柴油重卡",
+    "diesel": "柴油重卡",
     "diesel": "柴油重卡",
     "lng": "LNG天然气重卡",
     "hev": "混合动力",
@@ -474,7 +480,13 @@ if not results:
     anchor("sec-summary")
     with st.container(key="results-empty-card"):
         st.info("当前还没有优化结果，请先前往“路径优化”页面执行计算。")
-    render_page_nav("pages/7_path_optimization.py", None, prev_label="上一页", key_prefix="results-empty")
+    render_page_nav(
+        "pages/7_path_optimization.py",
+        "app.py",
+        prev_label="上一页",
+        next_label="返回首页",
+        key_prefix="results-empty-nav",
+    )
     st.stop()
 
 route_results = results.get("route_results", [])
@@ -639,7 +651,7 @@ with st.container(key="results-tabs-card"):
         with export_col1:
             render_download_button(
                 label="导出车辆调度汇总 CSV",
-                data=dispatch_df.to_csv(index=False, encoding="utf-8-sig"),
+                data=dispatch_df.to_csv(index=False).encode("utf-8-sig"),
                 key="results-export-dispatch",
                 file_name="车辆调度汇总.csv",
                 mime="text/csv",
@@ -648,7 +660,7 @@ with st.container(key="results-tabs-card"):
             if not load_export_df.empty:
                 render_download_button(
                     label="导出场馆装载明细 CSV",
-                    data=load_export_df.to_csv(index=False, encoding="utf-8-sig"),
+                    data=load_export_df.to_csv(index=False).encode("utf-8-sig"),
                     key="results-export-load-details",
                     file_name="场馆装载明细.csv",
                     mime="text/csv",
@@ -659,7 +671,7 @@ with st.container(key="results-tabs-card"):
             if not depot_df.empty:
                 render_download_button(
                     label="导出中转仓结果 CSV",
-                    data=depot_df.to_csv(index=False, encoding="utf-8-sig"),
+                    data=depot_df.to_csv(index=False).encode("utf-8-sig"),
                     key="results-export-depots",
                     file_name="中转仓选址结果.csv",
                     mime="text/csv",
@@ -668,7 +680,7 @@ with st.container(key="results-tabs-card"):
             if not segment_export_df.empty:
                 render_download_button(
                     label="导出分段碳排明细 CSV",
-                    data=segment_export_df.to_csv(index=False, encoding="utf-8-sig"),
+                    data=segment_export_df.to_csv(index=False).encode("utf-8-sig"),
                     key="results-export-segments",
                     file_name="分段碳排明细.csv",
                     mime="text/csv",
@@ -688,7 +700,8 @@ with st.container(key="results-tabs-card"):
 with st.container(key="results-footer-card"):
     render_page_nav(
         "pages/5_carbon_analysis.py",
-        None,
+        "app.py",
         prev_label="上一页",
-        key_prefix="results-footer",
+        next_label="返回首页",
+        key_prefix="results-footer-nav",
     )
