@@ -11,6 +11,13 @@ logger = logging.getLogger(__name__)
 # ===================== 安全配置 =====================
 _MAX_FILE_SIZE_MB: float = 10.0
 _MAX_ROW_COUNT: int = 200  # VRP 求解规模限制
+TEXT_FILE_ENCODINGS: Tuple[str, ...] = (
+    "utf-8-sig",
+    "utf-8",
+    "gb18030",
+    "gbk",
+    "gb2312",
+)
 _DANGEROUS_EXTENSIONS: Set[str] = {
     ".exe", ".bat", ".cmd", ".sh", ".ps1", ".js", ".vbs",
     ".dll", ".so", ".bin", ".msi", ".py", ".pyw", ".jar",
@@ -77,7 +84,8 @@ def read_uploaded_file(
 def _read_csv(uploaded_file) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
     """尝试多种编码读取 CSV。"""
     last_error: Optional[str] = None
-    for encoding in ("utf-8", "gbk", "gb2312", "utf-8-sig", "latin1"):
+    # 不使用 latin1 兜底，避免任意字节“解码成功”后把中文静默读成乱码。
+    for encoding in TEXT_FILE_ENCODINGS:
         try:
             uploaded_file.seek(0)
             df = pd.read_csv(uploaded_file, encoding=encoding)
@@ -100,7 +108,7 @@ def _read_csv(uploaded_file) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
 
 def _read_txt(uploaded_file) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
     """读取 TXT 文件（自动检测分隔符）。"""
-    for encoding in ("utf-8", "gbk", "gb2312", "utf-8-sig", "latin1"):
+    for encoding in TEXT_FILE_ENCODINGS:
         try:
             uploaded_file.seek(0)
             content = uploaded_file.read().decode(encoding)
@@ -120,7 +128,7 @@ def _read_txt(uploaded_file) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
 
 def _read_json(uploaded_file) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
     """读取 JSON 文件。"""
-    for encoding in ("utf-8", "gbk", "utf-8-sig"):
+    for encoding in TEXT_FILE_ENCODINGS:
         try:
             uploaded_file.seek(0)
             content = uploaded_file.read().decode(encoding)
