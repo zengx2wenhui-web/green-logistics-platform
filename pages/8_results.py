@@ -336,30 +336,40 @@ def build_map(
         ).add_to(map_chart)
 
     legend_html = """
-    <div style="position: fixed; bottom: 42px; left: 42px; z-index: 1000;
-                background: rgba(255, 255, 255, 0.96); padding: 14px 16px; border-radius: 14px;
-                border: 1px solid rgba(0, 0, 0, 0.12); box-shadow: 0 10px 24px rgba(0,0,0,0.14);
-                min-width: 230px; backdrop-filter: blur(6px);">
-        <div style="margin:0 0 10px 0; font-size: 15px; font-weight: 700; color:#111111;">路线图例</div>
-        <div style="display:flex;align-items:center;gap:10px;margin:7px 0;">
-            <span style="width:12px;height:12px;border-radius:999px;background:#7f1d1d;display:inline-block;"></span>
-            <span style="font-size:13px;color:#1f2937;">总仓节点</span>
+        <div style="position: fixed; bottom: 20px; left: 20px; z-index: 1000;
+                background: rgba(255, 255, 255, 0.94); padding: 8px 12px; border-radius: 6px;
+                border: 1px solid #ccc; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+                min-width: 160px; font-family: sans-serif;">
+        
+        <div style="margin-bottom: 8px; font-size: 13px; font-weight: bold; color: #000; border-bottom: 1px solid #eee; padding-bottom: 4px;">路线图例</div>
+        
+        <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+            <svg style="width: 14px; height: 14px; filter: drop-shadow(0px 1px 2px rgba(0,0,0,0.4));" viewBox="0 0 24 24">
+                <path fill="#e11d48" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+            </svg>
+            <span style="font-size: 12px; color: #333;">总仓节点</span>
         </div>
-        <div style="display:flex;align-items:center;gap:10px;margin:7px 0;">
-            <span style="width:12px;height:12px;border-radius:4px;background:#dc2626;display:inline-block;"></span>
-            <span style="font-size:13px;color:#1f2937;">中转仓节点</span>
+
+        <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+            <svg style="width: 13px; height: 13px;" viewBox="0 0 24 24">
+                <path fill="#ef4444" d="M12 3L2 12h3v8h14v-8h3L12 3z"/>
+            </svg>
+            <span style="font-size: 12px; color: #333;">中转仓节点</span>
         </div>
-        <div style="display:flex;align-items:center;gap:10px;margin:7px 0;">
-            <span style="width:12px;height:12px;border-radius:999px;background:#2563eb;display:inline-block;"></span>
-            <span style="font-size:13px;color:#1f2937;">场馆节点</span>
+
+        <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+            <span style="width: 10px; height: 10px; background: #ef4444; border-radius: 50%; display: inline-block;"></span>
+            <span style="font-size: 12px; color: #333;">场馆节点</span>
         </div>
-        <div style="display:flex;align-items:center;gap:10px;margin:7px 0;">
-            <span style="width:30px;height:0;border-top:4px solid #2F6BFF;display:inline-block;"></span>
-            <span style="font-size:13px;color:#1f2937;">配送主路线段</span>
+
+        <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+            <span style="width: 24px; height: 0; border-top: 2.5px solid #000; display: inline-block;"></span>
+            <span style="font-size: 12px; color: #333;">配送主路线段</span>
         </div>
-        <div style="display:flex;align-items:center;gap:10px;margin:7px 0;">
-            <span style="width:30px;height:0;border-top:4px dashed #6B7280;display:inline-block;"></span>
-            <span style="font-size:13px;color:#1f2937;">总仓与中转仓补给段</span>
+
+        <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+            <span style="width: 24px; height: 0; border-top: 2px dashed #000; display: inline-block;"></span>
+            <span style="font-size: 12px; color: #333;">总仓与中转仓补给段</span>
         </div>
     </div>
     """

@@ -1238,11 +1238,11 @@ if results:
                         ).add_to(m)
 
                 legend_html = """
-                <div style="position: fixed; bottom: 20px; left: 20px; z-index: 1000;
-                            background: rgba(255, 255, 255, 0.94); padding: 8px 12px; border-radius: 6px;
-                            border: 1px solid #ccc; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-                            min-width: 160px; font-family: sans-serif;">
-                    
+                    <div style="position: fixed; bottom: 20px; left: 20px; z-index: 1000;
+                background: rgba(255, 255, 255, 0.94); padding: 8px 12px; border-radius: 6px;
+                border: 1px solid #ccc; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+                min-width: 160px; font-family: sans-serif;">
+                
                     <div style="margin-bottom: 8px; font-size: 13px; font-weight: bold; color: #000; border-bottom: 1px solid #eee; padding-bottom: 4px;">路线图例</div>
                     
                     <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
@@ -1260,7 +1260,7 @@ if results:
                     </div>
 
                     <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
-                        <span style="width: 10px; height: 10px; background: radial-gradient(circle at 30% 30%, #fde047, #ca8a04); border-radius: 50%; display: inline-block;"></span>
+                        <span style="width: 10px; height: 10px; background: #ef4444; border-radius: 50%; display: inline-block;"></span>
                         <span style="font-size: 12px; color: #333;">场馆节点</span>
                     </div>
 
