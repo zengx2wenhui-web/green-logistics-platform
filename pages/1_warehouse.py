@@ -15,6 +15,7 @@ from pages._ui_shared import (
     anchor,
     inject_base_style,
     inject_sidebar_navigation_label,
+    render_download_button,
     render_sidebar_navigation,
     render_title,
     render_top_nav,
@@ -386,11 +387,12 @@ with st.container(key="warehouse-actions"):
             st.rerun()
     with a2:
         payload = json.dumps(st.session_state.warehouse, ensure_ascii=False, indent=2)
-        st.download_button(
-            "导出仓库数据",
-            payload,
-            "warehouse.json",
-            "application/json",
+        render_download_button(
+            label="导出仓库数据",
+            data=payload,
+            file_name="warehouse.json",
+            mime="application/json",
+            key="warehouse-export-json",
             width='stretch',
         )
 

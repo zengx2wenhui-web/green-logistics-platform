@@ -13,6 +13,7 @@ from pages._ui_shared import (
     anchor,
     inject_base_style,
     inject_sidebar_navigation_label,
+    render_download_button,
     render_sidebar_navigation,
     render_title,
     render_top_nav,
@@ -1434,11 +1435,12 @@ with st.container(key="materials-upload-card"):
             WEIGHT_COLS[4]: [150, 180, 90],
         }
     )
-    st.download_button(
-        "下载 CSV 模板",
-        template.to_csv(index=False).encode("utf-8-sig"),
-        "material_template.csv",
-        "text/csv",
+    render_download_button(
+        label="下载 CSV 模板",
+        data=template.to_csv(index=False).encode("utf-8-sig"),
+        file_name="material_template.csv",
+        mime="text/csv",
+        key="materials-template-csv",
         width="stretch",
     )
 

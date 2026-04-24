@@ -40,6 +40,29 @@ def _image_to_data_uri(path: Path) -> str:
     return f"data:{mime};base64,{encoded}"
 
 
+def render_download_button(
+    label: str,
+    data: object,
+    file_name: str | None = None,
+    mime: str | None = None,
+    *,
+    key: str,
+    width: str = "stretch",
+    disabled: bool = False,
+) -> bool:
+    """Render download buttons without rerunning the page and invalidating media URLs."""
+    return st.download_button(
+        label=label,
+        data=data,
+        file_name=file_name,
+        mime=mime,
+        key=key,
+        on_click="ignore",
+        disabled=disabled,
+        width=width,
+    )
+
+
 def _get_sidebar_summary() -> dict[str, int | float | bool]:
     warehouse = st.session_state.get("warehouse", {})
     venues = st.session_state.get("venues", [])

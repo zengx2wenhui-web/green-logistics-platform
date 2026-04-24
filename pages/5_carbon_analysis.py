@@ -15,6 +15,7 @@ from pages._ui_shared import (
     render_title,
     render_top_nav,
 )
+from utils.route_display import build_route_context, get_ordered_route_names
 from utils.vehicle_lib import VEHICLE_LIB
 
 
@@ -390,6 +391,8 @@ if not results or not isinstance(results, dict):
 
 route_results = results.get("route_results", []) or []
 nodes = results.get("nodes", []) or []
+depot_results = results.get("depot_results", []) or []
+route_context = build_route_context(nodes, depot_results)
 fleet_used_by_type = results.get("fleet_used_by_type", {}) or {}
 fleet_max_by_type = results.get("fleet_max_by_type", {}) or {}
 
@@ -440,8 +443,9 @@ with st.container(key="materials-upload-card"):
                 f"**总碳排**：{float(route_result.get('total_carbon_kg', 0) or 0):.2f} kg CO2"
             )
 
-            if route_result.get("route_path_names"):
-                st.markdown(f"**\u542b\u4e2d\u8f6c\u4ed3\u8def\u7ebf\uff1a** {' -> '.join(route_result.get('route_path_names', []))}")
+            route_names = get_ordered_route_names(route_result, route_context)
+            if route_names:
+                st.markdown(f"**含中转仓路线：** {' -> '.join(route_names)}")
             segment_rows = build_route_segment_rows(route_result, nodes)
             if segment_rows:
                 st.dataframe(pd.DataFrame(segment_rows), hide_index=True, width="stretch")

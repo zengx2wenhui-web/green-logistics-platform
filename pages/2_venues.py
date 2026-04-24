@@ -13,6 +13,7 @@ from pages._ui_shared import (
     anchor,
     inject_base_style,
     inject_sidebar_navigation_label,
+    render_download_button,
     render_sidebar_navigation,
     render_title,
     render_top_nav,
@@ -580,9 +581,10 @@ with st.container(key="venues-map-card"):
                 for venue in st.session_state.venues
             ]
         )
-        st.download_button(
-            "导出场馆CSV",
+        render_download_button(
+            label="导出场馆CSV",
             data=export_df.to_csv(index=False).encode("utf-8-sig"),
+            key="venues-export-csv",
             file_name="venues_export.csv",
             mime="text/csv",
             width='stretch',

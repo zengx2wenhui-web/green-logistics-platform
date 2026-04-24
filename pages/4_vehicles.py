@@ -138,9 +138,40 @@ def get_saved_vehicle_entry(vehicle_id: str) -> dict | None:
     return None
 
 
-def update_idx(step: int, total: int) -> None:
-    st.session_state.current_vehicle_idx = (st.session_state.current_vehicle_idx + step) % total
+def get_current_vehicle_id(vehicle_ids: list[str]) -> str:
+    fallback_id = vehicle_ids[0]
+    current_vehicle_id = st.session_state.get("current_vehicle_id")
+
+    if current_vehicle_id not in vehicle_ids:
+        legacy_idx = st.session_state.get("current_vehicle_idx", 0)
+        if isinstance(legacy_idx, int):
+            current_vehicle_id = vehicle_ids[legacy_idx % len(vehicle_ids)]
+        else:
+            current_vehicle_id = fallback_id
+        st.session_state.current_vehicle_id = current_vehicle_id
+
+    st.session_state.pop("current_vehicle_idx", None)
     st.session_state.pop("vehicle_selectbox", None)
+    return st.session_state.current_vehicle_id
+
+
+def sync_vehicle_selectbox(vehicle_ids: list[str]) -> str:
+    current_vehicle_id = get_current_vehicle_id(vehicle_ids)
+    if st.session_state.get("current_vehicle_selectbox") != current_vehicle_id:
+        st.session_state.current_vehicle_selectbox = current_vehicle_id
+    return current_vehicle_id
+
+
+def handle_vehicle_selectbox_change() -> None:
+    selected_vehicle_id = st.session_state.get("current_vehicle_selectbox")
+    if selected_vehicle_id:
+        st.session_state.current_vehicle_id = selected_vehicle_id
+
+
+def update_current_vehicle(step: int, vehicle_ids: list[str]) -> None:
+    current_vehicle_id = get_current_vehicle_id(vehicle_ids)
+    current_idx = vehicle_ids.index(current_vehicle_id)
+    st.session_state.current_vehicle_id = vehicle_ids[(current_idx + step) % len(vehicle_ids)]
 
 
 st.set_page_config(page_title="车辆配置", page_icon="🚛", layout="wide", initial_sidebar_state="expanded")
@@ -294,8 +325,6 @@ render_title("车辆配置", "从预置车型库中选择车辆，并补充全�
 
 if "vehicles" not in st.session_state:
     st.session_state.vehicles = []
-if "current_vehicle_idx" not in st.session_state:
-    st.session_state.current_vehicle_idx = 0
 if "global_season" not in st.session_state:
     st.session_state.global_season = "夏"
 if "global_h2_source" not in st.session_state:
@@ -304,7 +333,11 @@ if "vehicle_save_success" not in st.session_state:
     st.session_state.vehicle_save_success = False
 
 vehicle_types = build_vehicle_catalog()
-vehicle_names = [vehicle["name"] for vehicle in vehicle_types]
+vehicle_ids = [vehicle["id"] for vehicle in vehicle_types]
+vehicle_name_by_id = {vehicle["id"]: vehicle["name"] for vehicle in vehicle_types}
+vehicle_by_id = {vehicle["id"]: vehicle for vehicle in vehicle_types}
+vehicle_index_by_id = {vehicle_id: idx for idx, vehicle_id in enumerate(vehicle_ids)}
+current_vehicle_id = sync_vehicle_selectbox(vehicle_ids)
 
 if st.session_state.get("vehicle_save_success", False):
     st.success("车辆与环境参数已保存")
@@ -316,19 +349,17 @@ with st.container(key="materials-upload-card"):
     with c_title:
         st.markdown('<div class="glp-vehicle-card-title">车型库概览</div>', unsafe_allow_html=True)
     with c_sel:
-        selected_name = st.selectbox(
+        current_vehicle_id = st.selectbox(
             "车型",
-            vehicle_names,
-            index=st.session_state.current_vehicle_idx,
-            key="vehicle_selectbox",
+            vehicle_ids,
+            key="current_vehicle_selectbox",
+            format_func=lambda vehicle_id: vehicle_name_by_id[vehicle_id],
+            on_change=handle_vehicle_selectbox_change,
             label_visibility="collapsed",
         )
-        if vehicle_names.index(selected_name) != st.session_state.current_vehicle_idx:
-            st.session_state.current_vehicle_idx = vehicle_names.index(selected_name)
-            st.rerun()
-
-    current_idx = st.session_state.current_vehicle_idx
-    vehicle = vehicle_types[current_idx]
+    current_vehicle_id = get_current_vehicle_id(vehicle_ids)
+    current_idx = vehicle_index_by_id[current_vehicle_id]
+    vehicle = vehicle_by_id[current_vehicle_id]
     prev_vehicle = vehicle_types[(current_idx - 1) % len(vehicle_types)]
     next_vehicle = vehicle_types[(current_idx + 1) % len(vehicle_types)]
 
@@ -340,7 +371,7 @@ with st.container(key="materials-upload-card"):
 
     with col_prev_btn:
         if st.button("❮", key="btn_prev", width='stretch'):
-            update_idx(-1, len(vehicle_types))
+            update_current_vehicle(-1, vehicle_ids)
             st.rerun()
 
     with col_prev_img:
@@ -378,7 +409,7 @@ with st.container(key="materials-upload-card"):
 
     with col_next_btn:
         if st.button("❯", key="btn_next", width='stretch'):
-            update_idx(1, len(vehicle_types))
+            update_current_vehicle(1, vehicle_ids)
             st.rerun()
 
 with st.container(key="vehicle-environment-card"):

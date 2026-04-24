@@ -14,11 +14,19 @@ from pages._ui_shared import (
     anchor,
     inject_base_style,
     inject_sidebar_navigation_label,
+    render_download_button,
     render_sidebar_navigation,
     render_title,
     render_top_nav,
 )
 from utils.file_reader import normalize_name
+from utils.route_display import (
+    build_route_context,
+    get_ordered_route_names,
+    get_ordered_route_nodes,
+    get_ordered_route_segments,
+    is_warehouse_depot_segment,
+)
 
 
 VEHICLE_NAME_MAP = {
@@ -80,16 +88,8 @@ def infer_total_demand_kg(route_results: list[dict], demands_dict: dict) -> floa
     return sum(get_total_demand_value(value) for value in demands_dict.values())
 
 
-def format_route_text(visits: list[str]) -> str:
-    return " -> ".join(["总仓库", *list(visits), "总仓库"])
-
-
-def get_route_path_names(route_result: dict) -> list[str]:
-    path_names = route_result.get("route_path_names")
-    if isinstance(path_names, list) and path_names:
-        return [str(item) for item in path_names]
-    visits = [str(item) for item in route_result.get("visits", [])]
-    return ["总仓库", *visits, "总仓库"]
+def get_route_path_names(route_result: dict, route_context: dict) -> list[str]:
+    return get_ordered_route_names(route_result, route_context)
 
 
 def get_depot_display_name(depot: dict, index: int) -> str:
@@ -113,14 +113,14 @@ def get_depot_display_address(depot: dict) -> str:
     return "未知"
 
 
-def build_dispatch_dataframe(route_results: list[dict], vehicle_name: str) -> pd.DataFrame:
+def build_dispatch_dataframe(route_results: list[dict], vehicle_name: str, route_context: dict) -> pd.DataFrame:
     rows = []
     for index, route_result in enumerate(route_results, start=1):
         rows.append(
             {
                 "车辆编号": route_result.get("vehicle_name", f"车辆 {index}"),
                 "车型": get_route_vehicle_display_name(route_result, vehicle_name),
-                "含中转仓路线": " -> ".join(get_route_path_names(route_result)),
+                "含中转仓路线": " -> ".join(get_route_path_names(route_result, route_context)),
                 "访问场馆数": len(route_result.get("visited_venue_names", route_result.get("visits", []))),
                 "装载量(kg)": round(float(route_result.get("total_load_kg", 0) or 0), 2),
                 "行驶距离(km)": round(float(route_result.get("total_distance_km", 0) or 0), 2),
@@ -171,12 +171,12 @@ def build_route_load_dataframe(route_result: dict) -> pd.DataFrame:
     return pd.concat([detail_df, pd.DataFrame([total_row])], ignore_index=True)
 
 
-def build_load_export_dataframe(route_results: list[dict], vehicle_name: str) -> pd.DataFrame:
+def build_load_export_dataframe(route_results: list[dict], vehicle_name: str, route_context: dict) -> pd.DataFrame:
     rows = []
     for index, route_result in enumerate(route_results, start=1):
         vehicle_id = route_result.get("vehicle_name", f"车辆 {index}")
         vehicle_type = get_route_vehicle_display_name(route_result, vehicle_name)
-        route_path = " -> ".join(get_route_path_names(route_result))
+        route_path = " -> ".join(get_route_path_names(route_result, route_context))
         for stop in route_result.get("load_details", []):
             row = {
                 "车辆编号": vehicle_id,
@@ -241,10 +241,10 @@ def build_route_segment_export_dataframe(route_results: list[dict], vehicle_name
 def build_map(
     nodes: list[dict],
     route_results: list[dict],
-    trunk_routes: list[dict],
     depot_results_list: list[dict],
     demands_dict: dict,
     vehicle_name: str,
+    route_context: dict,
 ) -> folium.Map | None:
     if not nodes:
         return None
@@ -258,42 +258,35 @@ def build_map(
 
     for route_index, route_result in enumerate(route_results):
         route_color = route_colors[route_index % len(route_colors)]
-        for venue_name in route_result.get("visited_venue_names", route_result.get("visits", [])):
-            node_route_colors[normalize_name(venue_name)] = route_color
+        route_nodes = get_ordered_route_nodes(route_result, route_context)
+        for route_node in route_nodes:
+            if route_node.get("node_type") == "venue" and route_node.get("name"):
+                node_route_colors[normalize_name(route_node["name"])] = route_color
 
-        route_coords = route_result.get("route_coords", [])
-        if len(route_coords) > 1:
+        route_segments = get_ordered_route_segments(route_result, route_context)
+        if route_segments:
             route_name = route_result.get("vehicle_name", f"派车 {route_index + 1}")
-            route_text = " -> ".join(get_route_path_names(route_result))
-            folium.PolyLine(
-                route_coords,
-                color=route_color,
-                weight=4,
-                opacity=0.85,
-                popup=(
-                    f"{route_name} ({get_route_vehicle_display_name(route_result, vehicle_name)})<br>"
-                    f"路线：{route_text}<br>"
-                    f"距离：{float(route_result.get('total_distance_km', 0) or 0):.2f} km<br>"
-                    f"碳排：{float(route_result.get('total_carbon_kg', 0) or 0):.2f} kg CO2"
-                ),
-            ).add_to(map_chart)
-
-    for trunk_index, trunk_route in enumerate(trunk_routes, start=1):
-        trunk_coords = trunk_route.get("route_coords", [])
-        if len(trunk_coords) > 1:
-            folium.PolyLine(
-                trunk_coords,
-                color="#6B7280",
-                weight=3,
-                opacity=0.75,
-                dash_array="8,8",
-                popup=(
-                    f"干线补给 {trunk_index}<br>"
-                    f"{' -> '.join(get_route_path_names(trunk_route))}<br>"
-                    f"距离：{float(trunk_route.get('total_distance_km', 0) or 0):.2f} km<br>"
-                    f"碳排：{float(trunk_route.get('total_carbon_kg', 0) or 0):.2f} kg CO2"
-                ),
-            ).add_to(map_chart)
+            route_text = " -> ".join(get_route_path_names(route_result, route_context))
+            for segment_index, segment in enumerate(route_segments, start=1):
+                from_node = segment["from_node"]
+                to_node = segment["to_node"]
+                is_trunk_segment = is_warehouse_depot_segment(from_node, to_node)
+                segment_text = f"{from_node['name']} -> {to_node['name']}"
+                folium.PolyLine(
+                    segment["coords"],
+                    color="#6B7280" if is_trunk_segment else route_color,
+                    weight=3 if is_trunk_segment else 4,
+                    opacity=0.75 if is_trunk_segment else 0.85,
+                    dash_array="8,8" if is_trunk_segment else None,
+                    popup=(
+                        f"{route_name} ({get_route_vehicle_display_name(route_result, vehicle_name)})<br>"
+                        f"路线：{route_text}<br>"
+                        f"当前路段：{segment_text}<br>"
+                        f"路段序号：{segment_index}/{len(route_segments)}<br>"
+                        f"距离：{float(route_result.get('total_distance_km', 0) or 0):.2f} km<br>"
+                        f"碳排：{float(route_result.get('total_carbon_kg', 0) or 0):.2f} kg CO2"
+                    ),
+                ).add_to(map_chart)
 
     warehouse_node = nodes[0]
     folium.Marker(
@@ -343,15 +336,31 @@ def build_map(
         ).add_to(map_chart)
 
     legend_html = """
-    <div style="position: fixed; bottom: 50px; left: 50px; z-index: 1000;
-                background: white; padding: 12px 14px; border-radius: 10px;
-                border: 1px solid rgba(0, 0, 0, 0.18); box-shadow: 0 6px 18px rgba(0,0,0,0.12);">
-        <h4 style="margin:0 0 8px 0; font-size: 15px;">图例说明</h4>
-        <p style="margin:4px 0;">星形标记：总仓库</p>
-        <p style="margin:4px 0;">红色房屋：中转仓</p>
-        <p style="margin:4px 0;">圆点：场馆节点</p>
-        <p style="margin:4px 0;">彩色实线：末端配送路线</p>
-        <p style="margin:4px 0;">灰色虚线：总仓到中转仓的干线补给</p>
+    <div style="position: fixed; bottom: 42px; left: 42px; z-index: 1000;
+                background: rgba(255, 255, 255, 0.96); padding: 14px 16px; border-radius: 14px;
+                border: 1px solid rgba(0, 0, 0, 0.12); box-shadow: 0 10px 24px rgba(0,0,0,0.14);
+                min-width: 230px; backdrop-filter: blur(6px);">
+        <div style="margin:0 0 10px 0; font-size: 15px; font-weight: 700; color:#111111;">路线图例</div>
+        <div style="display:flex;align-items:center;gap:10px;margin:7px 0;">
+            <span style="width:12px;height:12px;border-radius:999px;background:#7f1d1d;display:inline-block;"></span>
+            <span style="font-size:13px;color:#1f2937;">总仓节点</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin:7px 0;">
+            <span style="width:12px;height:12px;border-radius:4px;background:#dc2626;display:inline-block;"></span>
+            <span style="font-size:13px;color:#1f2937;">中转仓节点</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin:7px 0;">
+            <span style="width:12px;height:12px;border-radius:999px;background:#2563eb;display:inline-block;"></span>
+            <span style="font-size:13px;color:#1f2937;">场馆节点</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin:7px 0;">
+            <span style="width:30px;height:0;border-top:4px solid #2F6BFF;display:inline-block;"></span>
+            <span style="font-size:13px;color:#1f2937;">配送主路线段</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin:7px 0;">
+            <span style="width:30px;height:0;border-top:4px dashed #6B7280;display:inline-block;"></span>
+            <span style="font-size:13px;color:#1f2937;">总仓与中转仓补给段</span>
+        </div>
     </div>
     """
     map_chart.get_root().html.add_child(folium.Element(legend_html))
@@ -464,10 +473,11 @@ nodes = results.get("nodes", [])
 depot_results_list = results.get("depot_results", [])
 demands_dict = results.get("demands", {})
 vehicle_name = get_result_vehicle_display_name(results)
+route_context = build_route_context(nodes, depot_results_list)
 
-dispatch_df = build_dispatch_dataframe(route_results, vehicle_name)
+dispatch_df = build_dispatch_dataframe(route_results, vehicle_name, route_context)
 route_carbon_df = build_route_carbon_dataframe(route_results, vehicle_name)
-load_export_df = build_load_export_dataframe(route_results, vehicle_name)
+load_export_df = build_load_export_dataframe(route_results, vehicle_name, route_context)
 segment_export_df = build_route_segment_export_dataframe(route_results, vehicle_name)
 depot_df = build_depot_dataframe(depot_results_list)
 
@@ -487,12 +497,12 @@ clustering_method = str(results.get("clustering_method") or "候选中转仓分�
 timestamp = str(results.get("timestamp") or "")
 has_trunk_breakdown = bool(trunk_routes) or trunk_distance_km > 0 or trunk_emission > 0
 distance_delta_text = (
-    f"末端 {terminal_distance_km:.2f} / 干线 {trunk_distance_km:.2f}"
+    f"配送段 {terminal_distance_km:.2f} / 补给段 {trunk_distance_km:.2f}"
     if has_trunk_breakdown
     else "车辆全程"
 )
-primary_emission_label = "末端配送碳排" if has_trunk_breakdown else "车辆全程碳排"
-secondary_emission_label = "干线补给碳排" if has_trunk_breakdown else "独立干线碳排"
+primary_emission_label = "配送段碳排" if has_trunk_breakdown else "车辆全程碳排"
+secondary_emission_label = "补给段碳排" if has_trunk_breakdown else "独立干线碳排"
 
 anchor("sec-summary")
 with st.container(key="results-summary-card"):
@@ -503,7 +513,7 @@ with st.container(key="results-summary-card"):
     with col2:
         st.metric("总行驶距离", f"{total_distance_km:.2f} km", delta=distance_delta_text)
     with col3:
-        st.metric("总物资需求", f"{total_demand_kg:,.1f} kg", delta=f"{len(route_results)} 条末端路线")
+        st.metric("总物资需求", f"{total_demand_kg:,.1f} kg", delta=f"{len(route_results)} 条闭环路线")
     with col4:
         st.metric("减排比例", f"{reduction_pct:.2f}%", delta=f"{len(depot_results_list)} 个中转仓")
 
@@ -523,7 +533,7 @@ with st.container(key="results-tabs-card"):
 
     with tab_map:
         st.subheader("物流网络地图")
-        map_chart = build_map(nodes, route_results, trunk_routes, depot_results_list, demands_dict, vehicle_name)
+        map_chart = build_map(nodes, route_results, depot_results_list, demands_dict, vehicle_name, route_context)
         if map_chart is not None:
             st_folium(map_chart, width="100%", height=560)
         else:
@@ -588,8 +598,7 @@ with st.container(key="results-tabs-card"):
                     f"（{get_route_vehicle_display_name(route_result, vehicle_name)}）"
                 )
                 with st.expander(vehicle_label, expanded=False):
-                    st.markdown(f"**路线：** {' -> '.join(get_route_path_names(route_result))}")
-                    st.markdown(f"**场馆访问顺序：** {format_route_text(route_result.get('visits', []))}")
+                    st.markdown(f"**路线：** {' -> '.join(get_route_path_names(route_result, route_context))}")
                     st.divider()
 
                     detail_df = build_route_load_dataframe(route_result)
@@ -618,17 +627,19 @@ with st.container(key="results-tabs-card"):
 
         export_col1, export_col2 = st.columns(2)
         with export_col1:
-            st.download_button(
+            render_download_button(
                 label="导出车辆调度汇总 CSV",
                 data=dispatch_df.to_csv(index=False, encoding="utf-8-sig"),
+                key="results-export-dispatch",
                 file_name="车辆调度汇总.csv",
                 mime="text/csv",
                 width="stretch",
             )
             if not load_export_df.empty:
-                st.download_button(
+                render_download_button(
                     label="导出场馆装载明细 CSV",
                     data=load_export_df.to_csv(index=False, encoding="utf-8-sig"),
+                    key="results-export-load-details",
                     file_name="场馆装载明细.csv",
                     mime="text/csv",
                     width="stretch",
@@ -636,26 +647,29 @@ with st.container(key="results-tabs-card"):
 
         with export_col2:
             if not depot_df.empty:
-                st.download_button(
+                render_download_button(
                     label="导出中转仓结果 CSV",
                     data=depot_df.to_csv(index=False, encoding="utf-8-sig"),
+                    key="results-export-depots",
                     file_name="中转仓选址结果.csv",
                     mime="text/csv",
                     width="stretch",
                 )
             if not segment_export_df.empty:
-                st.download_button(
+                render_download_button(
                     label="导出分段碳排明细 CSV",
                     data=segment_export_df.to_csv(index=False, encoding="utf-8-sig"),
+                    key="results-export-segments",
                     file_name="分段碳排明细.csv",
                     mime="text/csv",
                     width="stretch",
                 )
 
         raw_json = json.dumps(results, ensure_ascii=False, indent=2, default=_json_default)
-        st.download_button(
+        render_download_button(
             label="导出完整优化结果 JSON",
             data=raw_json.encode("utf-8"),
+            key="results-export-json",
             file_name="优化结果.json",
             mime="application/json",
             width="stretch",

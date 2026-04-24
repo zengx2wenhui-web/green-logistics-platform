@@ -18,9 +18,16 @@ from pages._ui_shared import (
     render_sidebar_navigation,
     render_top_nav,
 )
-from utils.carbon_calc import calc_trunk_emission, compute_route_emission
+from utils.carbon_calc import compute_route_emission
 from utils.distance_matrix import build_distance_matrix_from_coords
 from utils.file_reader import normalize_name
+from utils.route_display import (
+    build_route_context,
+    get_ordered_route_names,
+    get_ordered_route_nodes,
+    get_ordered_route_segments,
+    is_warehouse_depot_segment,
+)
 from utils.vehicle_lib import get_vehicle_params
 
 
@@ -264,6 +271,115 @@ def build_multi_depot_full_path_names(
     return [warehouse_name, depot_name, *list(visits), depot_name, warehouse_name]
 
 
+def build_route_node(
+    *,
+    name: str,
+    lng: float,
+    lat: float,
+    node_type: str,
+    address: str = "",
+) -> dict[str, object]:
+    return {
+        "name": str(name or "").strip(),
+        "lng": float(lng),
+        "lat": float(lat),
+        "node_type": node_type,
+        "address": str(address or "").strip(),
+    }
+
+
+def build_route_node_from_source(node: dict, node_type: str | None = None) -> dict[str, object]:
+    inferred_type = node_type
+    if not inferred_type:
+        if node.get("is_warehouse"):
+            inferred_type = "warehouse"
+        elif node.get("is_depot"):
+            inferred_type = "depot"
+        else:
+            inferred_type = "venue"
+
+    return build_route_node(
+        name=str(node.get("name") or "").strip(),
+        lng=float(node.get("lng", 0) or 0),
+        lat=float(node.get("lat", 0) or 0),
+        node_type=inferred_type,
+        address=str(node.get("address") or "").strip(),
+    )
+
+
+def build_route_segment_types(route_nodes: list[dict[str, object]]) -> list[str]:
+    segment_types: list[str] = []
+    for idx in range(max(len(route_nodes) - 1, 0)):
+        from_node = route_nodes[idx]
+        to_node = route_nodes[idx + 1]
+        node_types = {str(from_node.get("node_type") or ""), str(to_node.get("node_type") or "")}
+        segment_types.append("trunk_transfer" if node_types == {"warehouse", "depot"} else "delivery")
+    return segment_types
+
+
+def finalize_route_result(
+    *,
+    route_info: dict,
+    ordered_route_nodes: list[dict[str, object]],
+    segment_distances: list[float],
+    segment_demands: list[float],
+    vehicle_type_id: str,
+    season: str,
+    h2_source: str,
+) -> dict:
+    route_path_names = [str(node.get("name") or "") for node in ordered_route_nodes if str(node.get("name") or "").strip()]
+    route_coords = [[float(node["lat"]), float(node["lng"])] for node in ordered_route_nodes]
+    segment_labels = build_segment_labels(route_path_names)
+    segment_types = build_route_segment_types(ordered_route_nodes)
+
+    emission_summary = compute_route_emission(
+        distances=segment_distances,
+        demands_kg=segment_demands,
+        vehicle_type=vehicle_type_id,
+        season=season,
+        h2_source=h2_source,
+        include_cold_start=True,
+    )
+
+    annotated_segments: list[dict[str, object]] = []
+    trunk_distance_km = 0.0
+    trunk_carbon_kg = 0.0
+    for seg_idx, segment in enumerate(emission_summary.get("segments", [])):
+        segment_label = segment_labels[seg_idx] if seg_idx < len(segment_labels) else f"路段 {seg_idx + 1}"
+        segment_type = segment_types[seg_idx] if seg_idx < len(segment_types) else "delivery"
+        segment_distance = float(segment.get("distance_km", 0) or 0)
+        segment_carbon = float(segment.get("carbon_kg", 0) or 0)
+        if segment_type == "trunk_transfer":
+            trunk_distance_km += segment_distance
+            trunk_carbon_kg += segment_carbon
+
+        annotated_segments.append(
+            {
+                **segment,
+                "segment_label": segment_label,
+                "segment_type": segment_type,
+            }
+        )
+
+    total_distance_km = float(emission_summary.get("total_distance_km", 0) or 0)
+    total_carbon_kg = float(emission_summary.get("total_carbon_kg", 0) or 0)
+
+    route_info["ordered_route_nodes"] = ordered_route_nodes
+    route_info["route_coords"] = route_coords
+    route_info["route_path_names"] = route_path_names
+    route_info["segment_labels"] = segment_labels
+    route_info["segment_types"] = segment_types
+    route_info["segments"] = annotated_segments
+    route_info["total_distance_km"] = total_distance_km
+    route_info["total_carbon_kg"] = total_carbon_kg
+    route_info["initial_load_kg"] = float(emission_summary.get("initial_load_kg", sum(segment_demands)) or 0)
+    route_info["trunk_distance_km"] = round(trunk_distance_km, 2)
+    route_info["trunk_carbon_kg"] = round(trunk_carbon_kg, 4)
+    route_info["delivery_distance_km"] = round(max(total_distance_km - trunk_distance_km, 0.0), 2)
+    route_info["delivery_carbon_kg"] = round(max(total_carbon_kg - trunk_carbon_kg, 0.0), 4)
+    return route_info
+
+
 def infer_depot_region(depot_name: str) -> tuple[str, str]:
     name = str(depot_name or "")
     region_map = {
@@ -365,10 +481,12 @@ def solve_multi_depot_routes(
     routes: list[list[int]] = []
     global_vehicle_index = 0
     warehouse_name = str(warehouse.get("name") or "总仓库")
-    trunk_vehicle_template = max(
-        normalized_fleet,
-        key=lambda item: float(item.get("load_ton", 0) or 0),
-        default={},
+    warehouse_route_node = build_route_node(
+        name=warehouse_name,
+        lng=float(warehouse.get("lng", 0) or 0),
+        lat=float(warehouse.get("lat", 0) or 0),
+        node_type="warehouse",
+        address=str(warehouse.get("address") or "").strip(),
     )
 
     depot_assignments: dict[int, list[int]] = {}
@@ -435,16 +553,19 @@ def solve_multi_depot_routes(
             road_factor=1.3,
         )
         trunk_one_way_km = float(depot_distance_matrix[0][1] or 0)
-        trunk_total_weight_kg = float(sum(local_demands))
-        trunk_vehicle_type_id = str(trunk_vehicle_template.get("vehicle_type", "") or "")
-        trunk_vehicle_capacity_kg = int(
-            round(float(trunk_vehicle_template.get("load_ton", 0) or 0) * 1000)
+        depot_route_node = build_route_node(
+            name=depot_name,
+            lng=depot_lng,
+            lat=depot_lat,
+            node_type="depot",
+            address=depot_address,
         )
 
         local_routes = solver_result.get("routes", [])
         local_route_vehicle_ids = solver_result.get("route_vehicle_ids", [])
         local_vehicle_types = solver_result.get("vehicle_types", [])
         local_vehicle_capacities = solver_result.get("vehicle_capacities_kg", [])
+        depot_route_records: list[dict] = []
 
         for local_route_idx, route in enumerate(local_routes):
             vehicle_pool_id = local_route_vehicle_ids[local_route_idx]
@@ -467,7 +588,9 @@ def solve_multi_depot_routes(
                 "load_details": [],
                 "route_coords": [],
                 "route_path_names": [],
+                "ordered_route_nodes": [],
                 "segment_labels": [],
+                "segment_types": [],
                 "route_scope": "terminal",
                 "depot_name": depot_name,
                 "depot_lng": depot_lng,
@@ -475,6 +598,10 @@ def solve_multi_depot_routes(
                 "total_load_kg": 0.0,
                 "total_distance_km": 0.0,
                 "total_carbon_kg": 0.0,
+                "delivery_distance_km": 0.0,
+                "delivery_carbon_kg": 0.0,
+                "trunk_distance_km": 0.0,
+                "trunk_carbon_kg": 0.0,
                 "segments": [],
             }
 
@@ -501,80 +628,44 @@ def solve_multi_depot_routes(
                 if to_idx != 0:
                     local_segment_demands.append(local_demands[to_idx])
 
-            for stop_idx in route:
-                node = local_nodes[stop_idx]
-                route_info["route_coords"].append([node["lat"], node["lng"]])
-
-            emission_summary = compute_route_emission(
-                distances=local_segment_distances,
-                demands_kg=local_segment_demands,
-                vehicle_type=vehicle_type_id,
+            ordered_route_nodes = [
+                dict(warehouse_route_node),
+                dict(depot_route_node),
+                *[
+                    build_route_node_from_source(local_nodes[stop_idx], "venue")
+                    for stop_idx in route
+                    if stop_idx != 0
+                ],
+                dict(depot_route_node),
+                dict(warehouse_route_node),
+            ]
+            full_segment_distances = [trunk_one_way_km, *local_segment_distances, trunk_one_way_km]
+            full_segment_demands = [0.0, *local_segment_demands, 0.0, 0.0]
+            route_info["route_scope"] = "multi_depot_full"
+            finalize_route_result(
+                route_info=route_info,
+                ordered_route_nodes=ordered_route_nodes,
+                segment_distances=full_segment_distances,
+                segment_demands=full_segment_demands,
+                vehicle_type_id=vehicle_type_id,
                 season=season,
                 h2_source=h2_source,
-                include_cold_start=True,
             )
-            route_info["total_distance_km"] = emission_summary["total_distance_km"]
-            route_info["total_carbon_kg"] = emission_summary["total_carbon_kg"]
-            route_info["segments"] = emission_summary.get("segments", [])
-            route_info["route_path_names"] = build_route_path_names(depot_name, route_info["visits"])
-            route_info["segment_labels"] = build_segment_labels(route_info["route_path_names"])
             route_results.append(route_info)
+            depot_route_records.append(route_info)
             routes.append(route)
-
-        depot_trunk_routes: list[dict] = []
-        if trunk_total_weight_kg > 0 and trunk_one_way_km > 0:
-            trunk_vehicle_type_id = trunk_vehicle_type_id or normalized_fleet[0]["vehicle_type"]
-            trunk_path_names = build_route_path_names(warehouse_name, [depot_name])
-            remaining_load_kg = trunk_total_weight_kg
-
-            while remaining_load_kg > 0:
-                trip_load_kg = (
-                    min(remaining_load_kg, trunk_vehicle_capacity_kg)
-                    if trunk_vehicle_capacity_kg > 0
-                    else remaining_load_kg
-                )
-                trunk_summary = compute_route_emission(
-                    distances=[trunk_one_way_km, trunk_one_way_km],
-                    demands_kg=[trip_load_kg],
-                    vehicle_type=trunk_vehicle_type_id,
-                    season=season,
-                    h2_source=h2_source,
-                    include_cold_start=True,
-                )
-                trunk_route = {
-                    "route_scope": "trunk",
-                    "depot_name": depot_name,
-                    "vehicle_type_id": trunk_vehicle_type_id,
-                    "vehicle_type": display_vehicle_name(trunk_vehicle_type_id),
-                    "route_path_names": trunk_path_names,
-                    "route_coords": [
-                        [warehouse["lat"], warehouse["lng"]],
-                        [depot_lat, depot_lng],
-                        [warehouse["lat"], warehouse["lng"]],
-                    ],
-                    "segment_labels": build_segment_labels(trunk_path_names),
-                    "total_load_kg": trip_load_kg,
-                    "total_distance_km": trunk_summary["total_distance_km"],
-                    "total_carbon_kg": trunk_summary["total_carbon_kg"],
-                    "segments": trunk_summary.get("segments", []),
-                }
-                depot_trunk_routes.append(trunk_route)
-                trunk_routes.append(trunk_route)
-                remaining_load_kg -= trip_load_kg
 
         if depot_idx < len(updated_depot_results):
             updated_depot_results[depot_idx]["trunk_distance_km"] = round(
-                sum(item.get("total_distance_km", 0) for item in depot_trunk_routes),
+                sum(item.get("trunk_distance_km", 0) for item in depot_route_records),
                 2,
             )
             updated_depot_results[depot_idx]["trunk_carbon_kg"] = round(
-                sum(item.get("total_carbon_kg", 0) for item in depot_trunk_routes),
+                sum(item.get("trunk_carbon_kg", 0) for item in depot_route_records),
                 4,
             )
-            updated_depot_results[depot_idx]["trunk_trip_count"] = len(depot_trunk_routes)
-            updated_depot_results[depot_idx]["route_count"] = sum(
-                1 for item in route_results if item.get("depot_name") == depot_name
-            )
+            updated_depot_results[depot_idx]["trunk_trip_count"] = len(depot_route_records)
+            updated_depot_results[depot_idx]["route_count"] = len(depot_route_records)
 
     return route_results, trunk_routes, routes, updated_depot_results
 
@@ -934,20 +1025,27 @@ with st.container(key="path-opt-exec-card"):
                     "load_details": [],
                     "route_coords": [],
                     "route_path_names": [],
+                    "ordered_route_nodes": [],
                     "segment_labels": [],
+                    "segment_types": [],
                     "route_scope": "direct",
                     "total_load_kg": 0.0,
                     "total_distance_km": 0.0,
                     "total_carbon_kg": 0.0,
+                    "delivery_distance_km": 0.0,
+                    "delivery_carbon_kg": 0.0,
+                    "trunk_distance_km": 0.0,
+                    "trunk_carbon_kg": 0.0,
                     "segments": [],
                 }
 
                 segment_distances = []
                 segment_demands = []
+                ordered_route_nodes: list[dict[str, object]] = []
 
                 for stop_idx in route:
                     node = nodes[stop_idx]
-                    route_info["route_coords"].append([node["lat"], node["lng"]])
+                    ordered_route_nodes.append(build_route_node_from_source(node))
                     if stop_idx == 0:
                         continue
                     venue_name = node["name"]
@@ -964,22 +1062,15 @@ with st.container(key="path-opt-exec-card"):
                     if to_idx != 0:
                         segment_demands.append(node_demands[to_idx])
 
-                emission_summary = compute_route_emission(
-                    distances=segment_distances,
-                    demands_kg=segment_demands,
-                    vehicle_type=vehicle_type_id,
+                finalize_route_result(
+                    route_info=route_info,
+                    ordered_route_nodes=ordered_route_nodes,
+                    segment_distances=segment_distances,
+                    segment_demands=segment_demands,
+                    vehicle_type_id=vehicle_type_id,
                     season=g_season,
                     h2_source=g_h2_source,
-                    include_cold_start=True,
                 )
-                route_info["total_distance_km"] = emission_summary["total_distance_km"]
-                route_info["total_carbon_kg"] = emission_summary["total_carbon_kg"]
-                route_info["segments"] = emission_summary.get("segments", [])
-                route_info["route_path_names"] = build_route_path_names(
-                    warehouse.get("name", "总仓库"),
-                    route_info["visits"],
-                )
-                route_info["segment_labels"] = build_segment_labels(route_info["route_path_names"])
                 route_results.append(route_info)
             progress_bar.progress(0.85)
 
@@ -987,11 +1078,11 @@ with st.container(key="path-opt-exec-card"):
             baseline_ef = 0.060
             baseline_distance = sum(distance_matrix[0][i] + distance_matrix[i][0] for i in range(1, len(nodes)))
             baseline_carbon = sum(node_demands) / 1000 * baseline_distance * baseline_ef
-            terminal_distance_km = sum(route["total_distance_km"] for route in route_results)
-            terminal_carbon = sum(route["total_carbon_kg"] for route in route_results)
-            trunk_distance_km = sum(route.get("total_distance_km", 0) for route in trunk_routes)
-            trunk_carbon = sum(route.get("total_carbon_kg", 0) for route in trunk_routes)
-            optimized_carbon = terminal_carbon + trunk_carbon
+            terminal_distance_km = sum(route.get("delivery_distance_km", route.get("total_distance_km", 0)) for route in route_results)
+            terminal_carbon = sum(route.get("delivery_carbon_kg", route.get("total_carbon_kg", 0)) for route in route_results)
+            trunk_distance_km = sum(route.get("trunk_distance_km", 0) for route in route_results)
+            trunk_carbon = sum(route.get("trunk_carbon_kg", 0) for route in route_results)
+            optimized_carbon = sum(route.get("total_carbon_kg", 0) for route in route_results)
             reduction_pct = ((baseline_carbon - optimized_carbon) / baseline_carbon * 100) if baseline_carbon > 0 else 0.0
 
             used_vehicle_type_ids = sorted({route["vehicle_type_id"] for route in route_results})
@@ -1004,7 +1095,7 @@ with st.container(key="path-opt-exec-card"):
                 "total_emission": optimized_carbon,
                 "baseline_emission": baseline_carbon,
                 "reduction_percent": reduction_pct,
-                "total_distance_km": terminal_distance_km + trunk_distance_km,
+                "total_distance_km": sum(route.get("total_distance_km", 0) for route in route_results),
                 "terminal_distance_km": terminal_distance_km,
                 "trunk_distance_km": trunk_distance_km,
                 "terminal_emission": terminal_carbon,
@@ -1058,6 +1149,7 @@ if results:
     nodes = results.get("nodes", [])
     depot_results_list = results.get("depot_results", [])
     demands_result = results.get("demands", demands)
+    route_context = build_route_context(nodes, depot_results_list)
 
     anchor("sec-results")
     with st.container(key="path-opt-results-card"):
@@ -1080,8 +1172,9 @@ if results:
 
                 for idx, route_result in enumerate(route_results_list):
                     route_color = colors[idx % len(colors)]
-                    for venue_name in route_result.get("visited_venue_names", route_result.get("visits", [])):
-                        node_route_colors[normalize_name(venue_name)] = route_color
+                    for route_node in get_ordered_route_nodes(route_result, route_context):
+                        if route_node.get("node_type") == "venue" and route_node.get("name"):
+                            node_route_colors[normalize_name(route_node["name"])] = route_color
 
                 warehouse_node = nodes[0]
                 folium.Marker(
@@ -1119,33 +1212,70 @@ if results:
                     ).add_to(m)
 
                 for idx, route_result in enumerate(route_results_list):
-                    coords = route_result.get("route_coords", [])
-                    if len(coords) > 1:
+                    route_color = colors[idx % len(colors)]
+                    route_names = get_ordered_route_names(route_result, route_context)
+                    route_segments = get_ordered_route_segments(route_result, route_context)
+                    if not route_segments:
+                        continue
+
+                    route_text = " -> ".join(route_names)
+                    for segment_index, segment in enumerate(route_segments, start=1):
+                        from_node = segment["from_node"]
+                        to_node = segment["to_node"]
+                        is_trunk_segment = is_warehouse_depot_segment(from_node, to_node)
                         folium.PolyLine(
-                            coords,
-                            color=colors[idx % len(colors)],
-                            weight=4,
-                            opacity=0.8,
+                            segment["coords"],
+                            color="#6B7280" if is_trunk_segment else route_color,
+                            weight=3 if is_trunk_segment else 4,
+                            opacity=0.75 if is_trunk_segment else 0.8,
+                            dash_array="8,8" if is_trunk_segment else None,
                             popup=(
                                 f"{route_result['vehicle_name']} ({route_result['vehicle_type']})<br>"
-                                + " -> ".join(route_result.get("route_path_names", route_result.get("visits", [])))
+                                f"路线：{route_text}<br>"
+                                f"当前路段：{from_node['name']} -> {to_node['name']}<br>"
+                                f"路段序号：{segment_index}/{len(route_segments)}"
                             ),
                         ).add_to(m)
 
-                for trunk_index, trunk_route in enumerate(results.get("trunk_routes", []), start=1):
-                    trunk_coords = trunk_route.get("route_coords", [])
-                    if len(trunk_coords) > 1:
-                        folium.PolyLine(
-                            trunk_coords,
-                            color="#6B7280",
-                            weight=3,
-                            opacity=0.7,
-                            dash_array="8,8",
-                            popup=(
-                                f"干线补给 {trunk_index}<br>"
-                                + " -> ".join(trunk_route.get("route_path_names", []))
-                            ),
-                        ).add_to(m)
+                legend_html = """
+                <div style="position: fixed; bottom: 20px; left: 20px; z-index: 1000;
+                            background: rgba(255, 255, 255, 0.94); padding: 8px 12px; border-radius: 6px;
+                            border: 1px solid #ccc; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+                            min-width: 160px; font-family: sans-serif;">
+                    
+                    <div style="margin-bottom: 8px; font-size: 13px; font-weight: bold; color: #000; border-bottom: 1px solid #eee; padding-bottom: 4px;">路线图例</div>
+                    
+                    <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+                        <svg style="width: 14px; height: 14px; filter: drop-shadow(0px 1px 2px rgba(0,0,0,0.4));" viewBox="0 0 24 24">
+                            <path fill="#e11d48" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+                        </svg>
+                        <span style="font-size: 12px; color: #333;">总仓节点</span>
+                    </div>
+
+                    <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+                        <svg style="width: 13px; height: 13px;" viewBox="0 0 24 24">
+                            <path fill="#ef4444" d="M12 3L2 12h3v8h14v-8h3L12 3z"/>
+                        </svg>
+                        <span style="font-size: 12px; color: #333;">中转仓节点</span>
+                    </div>
+
+                    <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+                        <span style="width: 10px; height: 10px; background: radial-gradient(circle at 30% 30%, #fde047, #ca8a04); border-radius: 50%; display: inline-block;"></span>
+                        <span style="font-size: 12px; color: #333;">场馆节点</span>
+                    </div>
+
+                    <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+                        <span style="width: 24px; height: 0; border-top: 2.5px solid #000; display: inline-block;"></span>
+                        <span style="font-size: 12px; color: #333;">配送主路线段</span>
+                    </div>
+
+                    <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
+                        <span style="width: 24px; height: 0; border-top: 2px dashed #000; display: inline-block;"></span>
+                        <span style="font-size: 12px; color: #333;">总仓与中转仓补给段</span>
+                    </div>
+                </div>
+                """
+                m.get_root().html.add_child(folium.Element(legend_html))
 
                 st_folium(m, width="100%", height=500)
             else:
@@ -1163,7 +1293,7 @@ if results:
             for route_result in route_results_list:
                 vehicle_label = f"{route_result['vehicle_name']}（{route_result['vehicle_type']}）"
                 with st.expander(vehicle_label, expanded=False):
-                    route_text = " -> ".join(route_result.get("route_path_names", route_result.get("visits", [])))
+                    route_text = " -> ".join(get_ordered_route_names(route_result, route_context))
                     st.markdown(f"**路线：** {route_text}")
                     st.divider()
 
