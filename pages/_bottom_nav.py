@@ -7,9 +7,11 @@ def render_page_nav(
     prev_page: str | None,
     next_page: str | None,
     *,
-    prev_label: str = "\u4e0a\u4e00\u9875",
-    next_label: str = "\u4e0b\u4e00\u9875",
+    prev_label: str = "\u4e0a\u4e00\u6b65",
+    next_label: str = "\u4e0b\u4e00\u6b65",
     key_prefix: str = "glp-nav",
+    can_go_next: bool = True,
+    next_block_message: str | None = None,
 ) -> None:
     st.markdown(
         """
@@ -51,6 +53,7 @@ def render_page_nav(
     )
 
     st.markdown('<div class="glp-bottom-nav-wrap">', unsafe_allow_html=True)
+    next_blocked = False
     if prev_page and next_page:
         _, prev_col, _, next_col, _ = st.columns([2.4, 1, 0.45, 1, 2.4])
         with prev_col:
@@ -58,7 +61,10 @@ def render_page_nav(
                 st.switch_page(prev_page)
         with next_col:
             if st.button(next_label, key=f"{key_prefix}-next", width='stretch'):
-                st.switch_page(next_page)
+                if can_go_next:
+                    st.switch_page(next_page)
+                else:
+                    next_blocked = True
     elif prev_page:
         _, prev_col, _ = st.columns([2.8, 1, 2.8])
         with prev_col:
@@ -68,5 +74,10 @@ def render_page_nav(
         _, next_col, _ = st.columns([2.8, 1, 2.8])
         with next_col:
             if st.button(next_label, key=f"{key_prefix}-next", width='stretch'):
-                st.switch_page(next_page)
+                if can_go_next:
+                    st.switch_page(next_page)
+                else:
+                    next_blocked = True
+    if next_blocked and next_block_message:
+        st.warning(next_block_message)
     st.markdown("</div>", unsafe_allow_html=True)

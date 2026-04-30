@@ -12,6 +12,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # 配置常量
+DEFAULT_AMAP_API_KEY: str = "fda00124b4a41124416dbd3595c4b1ee"
 _RATE_LIMIT: int = 10          # 每秒最大请求数
 _RATE_LIMIT_MAX_WAIT: float = 5.0  # 限流最长等待时间（秒）
 _MAX_RETRIES: int = 3          # 最大重试次数
@@ -159,11 +160,16 @@ def _validate_coord(coord: Tuple[float, float], label: str = "坐标") -> bool:
     return True
 
 
+def _resolve_api_key(api_key: Optional[str] = None) -> str:
+    return str(api_key or "").strip() or DEFAULT_AMAP_API_KEY
+
+
 # 地理编码
-def geocode(address: str, api_key: str) -> Optional[Tuple[float, float]]:
-    if not address or not address.strip() or not api_key:
+def geocode(address: str, api_key: Optional[str] = None) -> Optional[Tuple[float, float]]:
+    if not address or not address.strip():
         return None
     address = address.strip()
+    resolved_api_key = _resolve_api_key(api_key)
 
     cached = _cache_read("geocode", address)
     if cached:
@@ -171,7 +177,7 @@ def geocode(address: str, api_key: str) -> Optional[Tuple[float, float]]:
 
     data = _request_with_retry(
         url="https://restapi.amap.com/v3/geocode/geo",
-        params={"key": api_key, "address": address},
+        params={"key": resolved_api_key, "address": address},
         label="高德地理编码",
     )
     if not data:
@@ -192,14 +198,13 @@ def geocode(address: str, api_key: str) -> Optional[Tuple[float, float]]:
 
 
 # 逆地理编码
-def reverse_geocode(lng: float, lat: float, api_key: str) -> str:
+def reverse_geocode(lng: float, lat: float, api_key: Optional[str] = None) -> str:
     fallback = f"未知地址({lng:.4f}, {lat:.4f})"
-    if not api_key:
-        return fallback
+    resolved_api_key = _resolve_api_key(api_key)
 
     data = _request_with_retry(
         url="https://restapi.amap.com/v3/geocode/regeo",
-        params={"key": api_key, "location": f"{lng},{lat}", "extensions": "base"},
+        params={"key": resolved_api_key, "location": f"{lng},{lat}", "extensions": "base"},
         label="逆地理编码",
     )
     if data and data.get("regeocode"):
@@ -211,11 +216,12 @@ def reverse_geocode(lng: float, lat: float, api_key: str) -> str:
 def get_driving_distance(
     origin: Tuple[float, float],
     destination: Tuple[float, float],
-    api_key: str,
+    api_key: Optional[str] = None,
     use_cache: bool = True,
 ) -> Optional[Tuple[float, float]]:
-    if not _validate_coord(origin) or not _validate_coord(destination) or not api_key:
+    if not _validate_coord(origin) or not _validate_coord(destination):
         return None
+    resolved_api_key = _resolve_api_key(api_key)
 
     cache_key = f"{origin[0]:.6f},{origin[1]:.6f}->{destination[0]:.6f},{destination[1]:.6f}"
     if use_cache:
@@ -225,7 +231,7 @@ def get_driving_distance(
 
     data = _request_with_retry(
         url="https://restapi.amap.com/v3/direction/driving",
-        params={"key": api_key, "origin": f"{origin[0]},{origin[1]}", "destination": f"{destination[0]},{destination[1]}"},
+        params={"key": resolved_api_key, "origin": f"{origin[0]},{origin[1]}", "destination": f"{destination[0]},{destination[1]}"},
         label="路径规划",
     )
     
@@ -247,18 +253,19 @@ def get_driving_distance(
 def batch_distance(
     origins: List[Tuple[float, float]],
     destinations: List[Tuple[float, float]],
-    api_key: str,
+    api_key: Optional[str] = None,
     mode: int = 1,
 ) -> Optional[List[Dict[str, float]]]:
-    if not api_key or not origins or not destinations:
+    if not origins or not destinations:
         return None
+    resolved_api_key = _resolve_api_key(api_key)
 
     origins_str = "|".join(f"{o[0]},{o[1]}" for o in origins)
     destinations_str = "|".join(f"{d[0]},{d[1]}" for d in destinations)
 
     data = _request_with_retry(
         url="https://restapi.amap.com/v3/distance",
-        params={"key": api_key, "origins": origins_str, "destination": destinations_str, "type": str(mode)},
+        params={"key": resolved_api_key, "origins": origins_str, "destination": destinations_str, "type": str(mode)},
         label="批量测量",
     )
     
@@ -280,7 +287,7 @@ def batch_distance(
 def batch_distance_one_to_many(
     origin: Tuple[float, float],
     destinations: List[Tuple[float, float]],
-    api_key: str,
+    api_key: Optional[str] = None,
     chunk_size: int = 100,
 ) -> List[Dict[str, float]]:
     all_results = []

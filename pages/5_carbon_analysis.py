@@ -1,4 +1,3 @@
-"""碳排放分析页面。"""
 from __future__ import annotations
 
 import sys
@@ -6,14 +5,29 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
+from streamlit_folium import st_folium
 
 _APP_ROOT = Path(__file__).resolve().parents[1]
 if str(_APP_ROOT) not in sys.path:
     sys.path.insert(0, str(_APP_ROOT))
 
 from pages._bottom_nav import render_page_nav
+from pages._dashboard_shared import (
+    apply_green_chart_theme,
+    build_scenario_breakdown_figure,
+    build_scenario_emission_figure,
+    build_scenario_summary_dataframe,
+    inject_green_dashboard_style,
+    render_scenario_triptych,
+    tune_bar_value_labels,
+)
+from pages._route_analysis_shared import (
+    build_route_dispatch_dataframe,
+    build_route_map,
+    build_route_overview_dataframe,
+    build_route_segment_rows,
+)
 from pages._ui_shared import (
     anchor,
     inject_base_style,
@@ -22,12 +36,11 @@ from pages._ui_shared import (
     render_title,
     render_top_nav,
 )
-from utils.route_display import build_route_context, get_ordered_route_names
+from utils.comparison_scenarios import get_comparison_scenarios
+from utils.route_display import build_route_context
 from utils.vehicle_lib import VEHICLE_LIB
 
-
 POWER_TYPE_MAPPING = {
-    "diesel": "柴油重卡",
     "diesel": "柴油重卡",
     "lng": "LNG天然气重卡",
     "hev": "混合动力 (HEV)",
@@ -38,9 +51,9 @@ POWER_TYPE_MAPPING = {
 }
 
 RATING_COLOR_MAP = {
-    "🟢 低碳": "#80B332",
-    "🟡 中碳": "#D8B452",
-    "🔴 高碳": "#D94841",
+    "优": "#80B332",
+    "中": "#D8B452",
+    "高": "#D94841",
 }
 
 
@@ -65,150 +78,35 @@ def normalize_vehicle_type_id(raw_value: object) -> str:
     return alias_map.get(value, value)
 
 
-def get_vehicle_type_id(route_result: dict) -> str:
-    vehicle_type_id = str(route_result.get("vehicle_type_id", "") or "").strip().lower()
-    if vehicle_type_id:
-        return normalize_vehicle_type_id(vehicle_type_id)
-    return normalize_vehicle_type_id(route_result.get("vehicle_type", ""))
-
-
 def get_vehicle_display_name(vehicle_type_id: str, fallback: str = "未知") -> str:
     normalized = normalize_vehicle_type_id(vehicle_type_id)
     return POWER_TYPE_MAPPING.get(normalized, fallback if fallback else normalized)
 
 
-def build_fleet_dispatch_dataframe(
-    route_results: list[dict],
-    vehicles: list[dict],
-    fleet_used_by_type: dict,
-    fleet_max_by_type: dict,
-) -> pd.DataFrame:
-    used_counts: dict[str, int] = {}
-    max_counts: dict[str, int] = {}
-
-    for vehicle_type, used in (fleet_used_by_type or {}).items():
-        normalized = normalize_vehicle_type_id(vehicle_type)
-        used_counts[normalized] = used_counts.get(normalized, 0) + int(used or 0)
-
-    for vehicle_type, cap in (fleet_max_by_type or {}).items():
-        normalized = normalize_vehicle_type_id(vehicle_type)
-        max_counts[normalized] = max_counts.get(normalized, 0) + int(cap or 0)
-
-    if not used_counts:
-        for route_result in route_results:
-            vehicle_type_id = get_vehicle_type_id(route_result)
-            used_counts[vehicle_type_id] = used_counts.get(vehicle_type_id, 0) + 1
-
-    if not max_counts:
-        for vehicle in vehicles:
-            vehicle_type_id = normalize_vehicle_type_id(vehicle.get("vehicle_type", ""))
-            if vehicle_type_id == "unknown":
-                continue
-            max_counts[vehicle_type_id] = max_counts.get(vehicle_type_id, 0) + int(
-                vehicle.get("count_max", vehicle.get("count", 0)) or 0
-            )
-
-    rows = []
-    for vehicle_type_id in sorted(set(used_counts) | set(max_counts)):
-        used = used_counts.get(vehicle_type_id, 0)
-        cap = max_counts.get(vehicle_type_id, 0)
-        rows.append(
-            {
-                "动力类型": get_vehicle_display_name(vehicle_type_id, vehicle_type_id),
-                "实际派车数": used,
-                "可用上限": cap,
-                "闲置车辆数": max(cap - used, 0),
-            }
-        )
-    return pd.DataFrame(rows)
-
-
-def build_route_segment_rows(route_result: dict, nodes: list[dict]) -> list[dict]:
-    rows: list[dict] = []
-    segments = route_result.get("segments", []) or []
-    route = route_result.get("route", []) or []
-    segment_labels = route_result.get("segment_labels", []) or []
-    if not segments:
-        return rows
-
-    for seg_idx, segment in enumerate(segments):
-        from_idx = route[seg_idx] if seg_idx < len(route) else None
-        to_idx = route[seg_idx + 1] if seg_idx + 1 < len(route) else None
-
-        from_name = f"节点{from_idx}"
-        to_name = f"节点{to_idx}"
-        if isinstance(from_idx, int) and 0 <= from_idx < len(nodes):
-            from_name = nodes[from_idx].get("name", from_name)
-        if isinstance(to_idx, int) and 0 <= to_idx < len(nodes):
-            to_name = nodes[to_idx].get("name", to_name)
-
-        rows.append(
-            {
-                "行驶区间": f"{from_name} -> {to_name}",
-                "区间距离 (km)": round(float(segment.get("distance_km", 0) or 0), 2),
-                "当前实际载重 (吨)": round(float(segment.get("load_kg", 0) or 0) / 1000.0, 3),
-                "区间碳排 (kg CO2)": round(float(segment.get("carbon_kg", 0) or 0), 4),
-            }
-        )
-    return rows
+def get_scenario_record(comparison_scenarios: list[dict], scenario_id: str) -> dict:
+    for scenario in comparison_scenarios:
+        if str(scenario.get("id") or "").strip() == scenario_id:
+            return scenario
+    return {}
 
 
 def build_vehicle_factor_dataframe() -> pd.DataFrame:
-    return _build_vehicle_factor_dataframe_impl()
-
-
-def build_route_segment_rows(route_result: dict, nodes: list[dict]) -> list[dict]:
-    rows: list[dict] = []
-    segments = route_result.get("segments", []) or []
-    route = route_result.get("route", []) or []
-    segment_labels = route_result.get("segment_labels", []) or []
-    if not segments:
-        return rows
-
-    for seg_idx, segment in enumerate(segments):
-        if seg_idx < len(segment_labels):
-            segment_name = str(segment_labels[seg_idx])
-        else:
-            from_idx = route[seg_idx] if seg_idx < len(route) else None
-            to_idx = route[seg_idx + 1] if seg_idx + 1 < len(route) else None
-
-            from_name = f"节点{from_idx}"
-            to_name = f"节点{to_idx}"
-            if isinstance(from_idx, int) and 0 <= from_idx < len(nodes):
-                from_name = nodes[from_idx].get("name", from_name)
-            if isinstance(to_idx, int) and 0 <= to_idx < len(nodes):
-                to_name = nodes[to_idx].get("name", to_name)
-            segment_name = f"{from_name} -> {to_name}"
-
-        rows.append(
-            {
-                "路段": segment_name,
-                "路段距离 (km)": round(float(segment.get("distance_km", 0) or 0), 2),
-                "运输负载 (吨)": round(float(segment.get("load_kg", 0) or 0) / 1000.0, 3),
-                "路段碳排 (kg CO2)": round(float(segment.get("carbon_kg", 0) or 0), 4),
-            }
-        )
-    return rows
-
-
-def _build_vehicle_factor_dataframe_impl() -> pd.DataFrame:
     rows = []
     for vehicle_type_id, info in VEHICLE_LIB.items():
         loaded_factor = float(info.get("intensity_g_per_tkm", 60) or 0) / 1000.0
         if loaded_factor < 0.04:
-            rating = "🟢 低碳"
+            rating = "优"
         elif loaded_factor < 0.06:
-            rating = "🟡 中碳"
+            rating = "中"
         else:
-            rating = "🔴 高碳"
-
+            rating = "高"
         rows.append(
             {
-                "车型名称": get_vehicle_display_name(vehicle_type_id, vehicle_type_id),
-                "有载碳因子 (kg/吨km)": round(loaded_factor, 3),
-                "空跑碳因子 (kg/km)": round(float(info.get("empty_g_per_km", 0) or 0) / 1000.0, 4),
-                "冷启动 (kg)": round(float(info.get("cold_start_g", 0) or 0) / 1000.0, 3),
-                "碳排放评级": rating,
+                "车型": get_vehicle_display_name(vehicle_type_id, vehicle_type_id),
+                "主碳因子(kg/tkm)": round(loaded_factor, 3),
+                "空驶因子(kg/km)": round(float(info.get("empty_g_per_km", 0) or 0) / 1000.0, 4),
+                "冷启动(kg)": round(float(info.get("cold_start_g", 0) or 0) / 1000.0, 3),
+                "等级": rating,
             }
         )
     return pd.DataFrame(rows)
@@ -229,9 +127,8 @@ def build_simulation_dataframe(total_distance_km: float, total_demand_kg: float)
                 "车型": get_vehicle_display_name(vehicle_type_id, vehicle_type_id),
                 "模拟碳排放(kg CO2)": round(simulated_emission, 2),
                 "基线碳排放(kg CO2)": round(baseline_emission, 2),
-                "减排量 (kg CO2)": round(reduction, 2),
+                "减排量(kg CO2)": round(reduction, 2),
                 "减排比例(%)": round(reduction_pct, 1),
-                "等效种树 (棵/年)": round(simulated_emission / 12.0, 1),
             }
         )
     return pd.DataFrame(rows)
@@ -246,7 +143,7 @@ def build_sensitivity_dataframe(total_distance_km: float, total_demand_kg: float
             emission = distance * factor * (total_demand_kg / 1000.0)
             rows.append(
                 {
-                    "距离缩放倍数": f"{multiplier}x",
+                    "距离系数": f"{multiplier}x",
                     "距离(km)": round(distance, 1),
                     "车型": get_vehicle_display_name(vehicle_type_id, vehicle_type_id),
                     "碳排放(kg CO2)": round(emission, 2),
@@ -255,368 +152,477 @@ def build_sensitivity_dataframe(total_distance_km: float, total_demand_kg: float
     return pd.DataFrame(rows)
 
 
-st.set_page_config(page_title="碳排放分析", page_icon="📩", layout="wide", initial_sidebar_state="expanded")
+def build_reduction_driver_dataframe(comparison_scenarios: list[dict]) -> pd.DataFrame:
+    baseline_scenario = get_scenario_record(comparison_scenarios, "baseline_direct")
+    diesel_same_scenario = get_scenario_record(comparison_scenarios, "diesel_same_routes")
+    optimized_scenario = get_scenario_record(comparison_scenarios, "optimized_current")
+
+    baseline_emission = float(baseline_scenario.get("total_emission", 0) or 0)
+    diesel_same_emission = float(diesel_same_scenario.get("total_emission", 0) or 0)
+    optimized_emission = float(optimized_scenario.get("total_emission", 0) or 0)
+    total_reduction = max(baseline_emission - optimized_emission, 0.0)
+
+    route_reduction = 0.0
+    power_reduction = 0.0
+    if baseline_scenario and diesel_same_scenario:
+        route_reduction = max(baseline_emission - diesel_same_emission, 0.0)
+        power_reduction = max(diesel_same_emission - optimized_emission, 0.0)
+    elif baseline_scenario and optimized_scenario:
+        route_reduction = total_reduction
+
+    return pd.DataFrame(
+        [
+            {
+                "驱动因素": "路线组织优化",
+                "减排量(kg CO2)": round(route_reduction, 2),
+                "贡献占比(%)": round(route_reduction / total_reduction * 100, 1) if total_reduction > 0 else 0.0,
+                "分析说明": "通过中转仓布局、路径合并与绕行压缩降低运输活动量。",
+            },
+            {
+                "驱动因素": "车型能源替代",
+                "减排量(kg CO2)": round(power_reduction, 2),
+                "贡献占比(%)": round(power_reduction / total_reduction * 100, 1) if total_reduction > 0 else 0.0,
+                "分析说明": "在同等路线结构下，通过低碳车型降低单位运输排放。",
+            },
+        ]
+    )
+
+
+def build_scenario_efficiency_dataframe(comparison_scenarios: list[dict]) -> pd.DataFrame:
+    rows = []
+    for scenario in comparison_scenarios:
+        total_emission = float(scenario.get("total_emission", 0) or 0)
+        total_distance = float(scenario.get("total_distance_km", 0) or 0)
+        num_vehicles = int(scenario.get("num_vehicles_used", 0) or 0)
+        trunk_emission = float(scenario.get("trunk_emission", 0) or 0)
+        rows.append(
+            {
+                "方案ID": str(scenario.get("id") or ""),
+                "方案": str(scenario.get("label") or scenario.get("id") or "未命名方案"),
+                "碳排效率(kg/km)": round(total_emission / total_distance, 4) if total_distance > 0 else 0.0,
+                "单车平均碳排(kg/车)": round(total_emission / num_vehicles, 2) if num_vehicles > 0 else 0.0,
+                "干线碳排占比(%)": round(trunk_emission / total_emission * 100, 1) if total_emission > 0 else 0.0,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_analysis_insights(
+    driver_df: pd.DataFrame,
+    efficiency_df: pd.DataFrame,
+    baseline_emission: float,
+    actual_total_emission: float,
+) -> list[str]:
+    insights: list[str] = []
+    if not driver_df.empty:
+        primary_driver = driver_df.sort_values("减排量(kg CO2)", ascending=False).iloc[0]
+        insights.append(f"当前减排主要来自{primary_driver['驱动因素']}，贡献约 {float(primary_driver['贡献占比(%)']):.1f}% 。")
+
+    if baseline_emission > 0:
+        total_drop_pct = max(baseline_emission - actual_total_emission, 0.0) / baseline_emission * 100
+        insights.append(f"优化方案相较基线方案的总碳排下降约 {total_drop_pct:.1f}% 。")
+
+    baseline_eff_row = efficiency_df[efficiency_df["方案ID"] == "baseline_direct"]
+    optimized_eff_row = efficiency_df[efficiency_df["方案ID"] == "optimized_current"]
+    if not baseline_eff_row.empty and not optimized_eff_row.empty:
+        baseline_eff = float(baseline_eff_row.iloc[0]["碳排效率(kg/km)"] or 0)
+        optimized_eff = float(optimized_eff_row.iloc[0]["碳排效率(kg/km)"] or 0)
+        if baseline_eff > 0:
+            intensity_drop_pct = max(baseline_eff - optimized_eff, 0.0) / baseline_eff * 100
+            insights.append(f"优化方案的单位里程碳排较基线下降约 {intensity_drop_pct:.1f}% 。")
+
+    optimized_trunk_row = efficiency_df[efficiency_df["方案ID"] == "optimized_current"]
+    if not optimized_trunk_row.empty:
+        trunk_share = float(optimized_trunk_row.iloc[0]["干线碳排占比(%)"] or 0)
+        insights.append(f"当前优化方案中，干线补给碳排占总碳排约 {trunk_share:.1f}% 。")
+
+    return insights
+
+
+st.set_page_config(page_title="碳排放分析", page_icon="🌿", layout="wide", initial_sidebar_state="expanded")
 inject_sidebar_navigation_label()
 inject_base_style()
+inject_green_dashboard_style("carbon-analysis")
 render_sidebar_navigation()
 render_top_nav(
-    tabs=[("路径明细", "sec-factors"), ("动力横评", "sec-analysis"), ("模拟推演", "sec-ranking"), ("敏感性分析", "sec-config")],
+    tabs=[
+        ("分析摘要", "sec-summary"),
+        ("方案对比", "sec-analysis"),
+        ("路线展示", "sec-routes"),
+        ("车型模拟", "sec-simulation"),
+        ("敏感性分析", "sec-sensitivity"),
+    ],
     active_idx=0,
 )
-
-st.markdown(
-    """
-    <style>
-    .stApp { background: #dfe7d6; }
-    .block-container {
-        max-width: 1240px;
-        padding-top: 1.25rem;
-        padding-left: 3rem;
-        padding-right: 3rem;
-        padding-bottom: 4rem;
-    }
-    .block-container h1 {
-        margin: 0.35rem 0 0.25rem;
-        font-size: 3.2rem;
-        font-weight: 700;
-        color: #111111;
-        letter-spacing: -0.02em;
-    }
-    .block-container p {
-        color: #111111;
-        font-size: 1.05rem;
-    }
-    .st-key-materials-upload-card,
-    .st-key-materials-online-card,
-    .st-key-carbon-ranking-card,
-    .st-key-carbon-config-card,
-    .st-key-carbon-tip-card {
-        background: linear-gradient(135deg, rgba(223, 239, 188, 0.94) 0%, rgba(214, 234, 174, 0.92) 100%);
-        border: 1px solid #d0e2b4;
-        border-radius: 28px;
-        padding: 1.55rem 1.7rem 1.65rem;
-        box-shadow: 0 8px 24px rgba(123, 145, 91, 0.22);
-        margin-top: 1.25rem;
-        overflow: hidden;
-    }
-    .st-key-materials-upload-card > div,
-    .st-key-materials-online-card > div,
-    .st-key-carbon-ranking-card > div,
-    .st-key-carbon-config-card > div,
-    .st-key-carbon-tip-card > div {
-        gap: 0.95rem;
-    }
-    .st-key-materials-upload-card h3,
-    .st-key-materials-online-card h3,
-    .st-key-carbon-ranking-card h3,
-    .st-key-carbon-config-card h3 {
-        font-size: 1.95rem;
-        font-weight: 700;
-        color: #111111;
-        margin-bottom: 0.15rem;
-    }
-    [data-testid="stHorizontalBlock"] { gap: 1rem; }
-    [data-testid="stCaptionContainer"] {
-        font-size: 1rem;
-        color: #1c1c1c;
-    }
-    div[data-testid="stAlert"] {
-        border-radius: 18px !important;
-        border: 0 !important;
-    }
-    div[data-testid="stDataFrame"] {
-        background: rgba(255, 255, 255, 0.95) !important;
-        border-radius: 18px !important;
-        overflow: hidden !important;
-    }
-    div[data-testid="stPlotlyChart"] {
-        background: transparent !important;
-        border-radius: 18px !important;
-        overflow: hidden;
-    }
-    div[data-testid="stMetric"] {
-        background: transparent !important;
-        border: 0 !important;
-        padding: 0.1rem 0 !important;
-    }
-    div[data-testid="stMetric"] label {
-        color: #111111 !important;
-        font-size: 1rem !important;
-        font-weight: 600 !important;
-    }
-    div[data-testid="stMetricValue"] {
-        color: #111111 !important;
-        font-size: 2rem !important;
-        font-weight: 700 !important;
-    }
-    div[data-testid="stExpander"] {
-        border-radius: 18px !important;
-        overflow: hidden;
-        border: 1px solid rgba(0, 0, 0, 0.06) !important;
-        background: rgba(255, 255, 255, 0.55) !important;
-    }
-    .glp-bottom-nav {
-        margin-top: 2.5rem !important;
-        gap: 4rem !important;
-        font-size: 1.65rem !important;
-    }
-    @media (max-width: 900px) {
-        .block-container {
-            padding-left: 1rem;
-            padding-right: 1rem;
-            padding-bottom: 3rem;
-        }
-        .block-container h1 {
-            font-size: 2.55rem;
-        }
-        .st-key-materials-upload-card,
-        .st-key-materials-online-card,
-        .st-key-carbon-ranking-card,
-        .st-key-carbon-config-card,
-        .st-key-carbon-tip-card {
-            padding: 1.2rem 1rem 1.35rem;
-        }
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-render_title("碳排放分析", "保留原页面视觉风格，展示路径级碳排明细、动力对比、车型模拟与减排敏感性分析")
+render_title("碳排放分析", "在保持现有风格的前提下，集中展示三方案对比、可切换路线与专业分析结果。")
 
 results = st.session_state.get("optimization_results") or st.session_state.get("results")
-vehicles = st.session_state.get("vehicles", [])
 
 if not results or not isinstance(results, dict):
-    anchor("sec-factors")
-    with st.container(key="materials-upload-card"):
-        st.warning("尚未执行路径优化，请先完成“路径优化”页面的计算。")
-        st.info("当前页面已切换为深度碳排分析视图，需要先生成路线、载重和碳排结果。")
+    anchor("sec-summary")
+    st.warning("尚未执行路径优化，请先完成“路径优化”页面的计算。")
     render_page_nav("pages/7_path_optimization.py", "pages/8_results.py", key_prefix="carbon-analysis-nav")
     st.stop()
-    raise SystemExit
 
 route_results = results.get("route_results", []) or []
-nodes = results.get("nodes", []) or []
-depot_results = results.get("depot_results", []) or []
-route_context = build_route_context(nodes, depot_results)
-fleet_used_by_type = results.get("fleet_used_by_type", {}) or {}
-fleet_max_by_type = results.get("fleet_max_by_type", {}) or {}
-
 if not route_results:
-    anchor("sec-factors")
-    with st.container(key="materials-upload-card"):
-        st.warning("当前没有可用的路线结果。")
-        st.info("请返回“路径优化”页面重新执行计算后，再查看碳排放分析。")
+    anchor("sec-summary")
+    st.warning("当前没有可展示的路线结果。")
     render_page_nav("pages/7_path_optimization.py", "pages/8_results.py", key_prefix="carbon-analysis-nav")
     st.stop()
-    raise SystemExit
 
+nodes = results.get("nodes", []) or []
+demands_dict = results.get("demands", {}) or {}
 actual_total_distance = float(results.get("total_distance_km", 0) or 0)
 actual_total_emission = float(results.get("total_emission", 0) or 0)
 baseline_emission = float(results.get("baseline_emission", 0) or 0)
 reduction_pct = float(results.get("reduction_percent", 0) or 0)
 total_demand_kg = sum(float(route.get("total_load_kg", 0) or 0) for route in route_results)
-total_vehicle_count = int(results.get("num_vehicles_used", len(route_results)) or 0)
 
-fleet_dispatch_df = build_fleet_dispatch_dataframe(route_results, vehicles, fleet_used_by_type, fleet_max_by_type)
+comparison_scenarios = get_comparison_scenarios(results)
+scenario_df = build_scenario_summary_dataframe(comparison_scenarios)
 vehicle_factor_df = build_vehicle_factor_dataframe()
 simulation_df = build_simulation_dataframe(actual_total_distance, total_demand_kg)
 sensitivity_df = build_sensitivity_dataframe(actual_total_distance, total_demand_kg)
+driver_df = build_reduction_driver_dataframe(comparison_scenarios)
+efficiency_df = build_scenario_efficiency_dataframe(comparison_scenarios)
+insights = build_analysis_insights(driver_df, efficiency_df, baseline_emission, actual_total_emission)
 
-best_simulated = simulation_df.loc[simulation_df["模拟碳排放(kg CO2)"].idxmin()] if not simulation_df.empty else None
-worst_simulated = simulation_df.loc[simulation_df["模拟碳排放(kg CO2)"].idxmax()] if not simulation_df.empty else None
+primary_driver = driver_df.sort_values("减排量(kg CO2)", ascending=False).iloc[0].to_dict() if not driver_df.empty else None
 
-anchor("sec-factors")
-with st.container(key="materials-upload-card"):
-    st.subheader("🔍 路径碳排明细")
-    st.caption("本页总碳排已计入冷启动基数，下方按车辆路线和分段载重展示更细粒度的碳排核算。")
+default_scenario_id = "optimized_current" if get_scenario_record(comparison_scenarios, "optimized_current") else str(comparison_scenarios[0].get("id") or "")
+scenario_options = {str(scenario.get("id") or ""): str(scenario.get("label") or scenario.get("id") or "未命名方案") for scenario in comparison_scenarios}
+selected_scenario_id = st.session_state.get("carbon_analysis_selected_scenario_id") or default_scenario_id
+if selected_scenario_id not in scenario_options:
+    selected_scenario_id = default_scenario_id
+st.session_state["carbon_analysis_selected_scenario_id"] = selected_scenario_id
 
+active_scenario = get_scenario_record(comparison_scenarios, selected_scenario_id) or comparison_scenarios[0]
+active_route_results = list(active_scenario.get("route_results", []) or [])
+active_depot_results = list(active_scenario.get("depot_results", []) or [])
+active_route_context = build_route_context(nodes, active_depot_results)
+active_route_df = build_route_overview_dataframe(active_route_results, active_route_context)
+active_dispatch_df = build_route_dispatch_dataframe(active_route_results, active_route_context)
+active_summary_df = scenario_df[scenario_df["方案ID"] == str(active_scenario.get("id") or "")]
+active_summary_row = active_summary_df.iloc[0].to_dict() if not active_summary_df.empty else {}
 
-
-    if not fleet_dispatch_df.empty:
-        st.markdown("#### 本次方案派车组成（实际 / 上限）")
-        st.dataframe(fleet_dispatch_df, hide_index=True, width="stretch")
-
-    for idx, route_result in enumerate(route_results, start=1):
-        vehicle_type_id = get_vehicle_type_id(route_result)
-        vehicle_name = route_result.get("vehicle_name", f"车辆{idx}")
-        vehicle_label = get_vehicle_display_name(vehicle_type_id, str(route_result.get("vehicle_type", "") or vehicle_type_id))
-        with st.expander(f"车辆{idx}：{vehicle_name} [{vehicle_label}]", expanded=False):
-            total_load = float(route_result.get("initial_load_kg", route_result.get("total_load_kg", 0)) or 0)
-            st.markdown(
-                f"**路线总载重**：{total_load / 1000.0:.2f} 吨  |  "
-                f"**总距离**：{float(route_result.get('total_distance_km', 0) or 0):.2f} km  |  "
-                f"**总碳排**：{float(route_result.get('total_carbon_kg', 0) or 0):.2f} kg CO2"
-            )
-
-            route_names = get_ordered_route_names(route_result, route_context)
-            if route_names:
-                st.markdown(f"**含中转仓路线：** {' -> '.join(route_names)}")
-            segment_rows = build_route_segment_rows(route_result, nodes)
-            if segment_rows:
-                st.dataframe(pd.DataFrame(segment_rows), hide_index=True, width="stretch")
-            elif route_result.get("segments"):
-                st.dataframe(pd.DataFrame(route_result.get("segments", [])), hide_index=True, width="stretch")
-            else:
-                st.info("当前路线未包含分段碳排明细。")
-
-anchor("sec-analysis")
-with st.container(key="materials-online-card"):
-    st.subheader("🧬 核心动力类型碳因子横评")
-
-
-    fig_factor = px.bar(
-        vehicle_factor_df,
-        x="车型名称",
-        y="有载碳因子 (kg/吨km)",
-        color="碳排放评级",
-        title="各车型主碳因子对比（越低越好）",
-        text_auto=".3f",
-        color_discrete_map=RATING_COLOR_MAP,
-    )
-    fig_factor.update_layout(
-        height=420,
-        paper_bgcolor="rgba(0, 0, 0, 0)",
-        plot_bgcolor="rgba(255, 255, 255, 0.65)",
-        legend_title_text="",
-    )
-    st.plotly_chart(fig_factor, width="stretch")
-
-
-
-    if baseline_emission > 0:
-        compare_df = pd.DataFrame(
-            {
-                "方案": ["基线方案（柴油直发）", "当前优化调度"],
-                "碳排放(kg CO2)": [baseline_emission, actual_total_emission],
-            }
-        )
-        fig_compare = px.bar(
-            compare_df,
-            x="方案",
-            y="碳排放(kg CO2)",
-            color="方案",
-            title="基线方案 vs 当前优化方案",
-            text_auto=".2f",
-            color_discrete_sequence=["#D94841", "#80B332"],
-        )
-        fig_compare.update_layout(
-            showlegend=False,
-            height=380,
-            paper_bgcolor="rgba(0, 0, 0, 0)",
-            plot_bgcolor="rgba(255, 255, 255, 0.65)",
-        )
-        st.plotly_chart(fig_compare, width="stretch")
-
-anchor("sec-ranking")
-with st.container(key="carbon-ranking-card"):
-    st.subheader("🧪 车型换算模拟推演")
-    st.caption(
-        f"基于本次最优路径，总距离 {actual_total_distance:.2f} km、总货物量 {total_demand_kg:,.0f} kg，"
-        "推演如果全部使用单一车型执行运输，碳排表现将如何变化。"
-    )
-
-    fig_sim = px.bar(
-        simulation_df,
-        x="车型",
-        y="模拟碳排放(kg CO2)",
-        color="车型",
-        title="单一车型全包换算模拟",
-        text_auto=".1f",
-        color_discrete_sequence=["#80B332", "#D8B452", "#6AA84F", "#C97C5D", "#9BBB59", "#B6C59D"],
-    )
-    if not simulation_df.empty:
-        fig_sim.add_hline(
-            y=float(simulation_df["基线碳排放(kg CO2)"].max()),
-            line_dash="dash",
-            line_color="#D94841",
-            annotation_text="基线碳排放（柴油单独配送）",
-        )
-    fig_sim.update_layout(
-        showlegend=False,
-        height=430,
-        paper_bgcolor="rgba(0, 0, 0, 0)",
-        plot_bgcolor="rgba(255, 255, 255, 0.65)",
-    )
-    st.plotly_chart(fig_sim, width="stretch")
-
-
-    fig_radar = go.Figure()
-    fig_radar.add_trace(
-        go.Scatterpolar(
-            r=simulation_df["减排比例(%)"].tolist(),
-            theta=simulation_df["车型"].tolist(),
-            fill="toself",
-            name="减排比例(%)",
-            marker={"color": "#80B332"},
-        )
-    )
-    fig_radar.update_layout(
-        title="相比传统柴油直发的减排百分比",
-        height=420,
-        paper_bgcolor="rgba(0, 0, 0, 0)",
-        polar={"radialaxis": {"visible": True, "ticksuffix": "%"}},
-    )
-    st.plotly_chart(fig_radar, width="stretch")
-
-
-    if best_simulated is not None and worst_simulated is not None:
-        summary_col1, summary_col2 = st.columns(2)
-        with summary_col1:
-            st.success(
-                "\n".join(
-                    [
-                        f"绿色先锋推荐：{best_simulated['车型']}",
-                        f"模拟碳排放：{best_simulated['模拟碳排放(kg CO2)']:.2f} kg CO2",
-                        f"减排比例：{best_simulated['减排比例(%)']:.1f}%",
-                        f"等效种树：{best_simulated['等效种树 (棵/年)']:.1f} 棵/年",
-                    ]
-                )
-            )
-        with summary_col2:
-            st.error(
-                "\n".join(
-                    [
-                        f"高碳排放警示：{worst_simulated['车型']}",
-                        f"模拟碳排放：{worst_simulated['模拟碳排放(kg CO2)']:.2f} kg CO2",
-                        f"减排比例：{worst_simulated['减排比例(%)']:.1f}%",
-                    ]
-                )
-            )
-
-anchor("sec-config")
-with st.container(key="carbon-config-card"):
-    st.subheader("📉 里程-碳排敏感性分析")
-    st.caption("分析距离变化时，不同车型的碳排放趋势与放大效应。")
-
-    fig_sensitivity = px.line(
-        sensitivity_df,
-        x="距离(km)",
-        y="碳排放(kg CO2)",
-        color="车型",
-        title="碳排放敏感性分析（距离变化）",
-        markers=True,
-        color_discrete_sequence=["#80B332", "#D8B452", "#6AA84F", "#C97C5D", "#9BBB59", "#B6C59D"],
-    )
-    fig_sensitivity.update_layout(
-        height=430,
-        paper_bgcolor="rgba(0, 0, 0, 0)",
-        plot_bgcolor="rgba(255, 255, 255, 0.65)",
-    )
-    st.plotly_chart(fig_sensitivity, width="stretch")
-
-    summary_col1, summary_col2, summary_col3 = st.columns(3)
+anchor("sec-summary")
+with st.container(key="carbon-analysis-card-summary"):
+    st.markdown("#### 分析结论")
+    summary_col1, summary_col2, summary_col3, summary_col4 = st.columns(4)
     with summary_col1:
         st.metric("基线碳排放", f"{baseline_emission:.2f} kg CO2")
     with summary_col2:
         st.metric("当前优化碳排", f"{actual_total_emission:.2f} kg CO2")
     with summary_col3:
-        st.metric("减排比例", f"{max(baseline_emission - actual_total_emission, 0):.2f} kg CO2", delta=f"-{reduction_pct:.1f}%")
+        st.metric("总减排量", f"{max(baseline_emission - actual_total_emission, 0):.2f} kg CO2", delta=f"-{reduction_pct:.1f}%")
+    with summary_col4:
+        if primary_driver:
+            st.metric("核心减排驱动", str(primary_driver["驱动因素"]), delta=f"贡献 {float(primary_driver['贡献占比(%)']):.1f}%")
+        else:
+            st.metric("核心减排驱动", "--")
 
-with st.container(key="carbon-tip-card"):
-    st.caption(
-        f"数据来源：路径优化结果 | 计算时间：{results.get('timestamp', '未知')} | "
+    render_scenario_triptych(scenario_df)
+
+    insight_col1, insight_col2 = st.columns([1.02, 0.98])
+    with insight_col1:
+        fig_driver = px.bar(
+            driver_df.sort_values("减排量(kg CO2)", ascending=True),
+            x="减排量(kg CO2)",
+            y="驱动因素",
+            orientation="h",
+            text_auto=".2f",
+            color_discrete_sequence=["#2F6BFF"],
+            title="优化方案减排驱动拆解",
+        )
+        apply_green_chart_theme(fig_driver, height=380, showlegend=False, right_margin=48)
+        tune_bar_value_labels(fig_driver, orientation="h", headroom_ratio=0.12)
+        st.plotly_chart(fig_driver, width="stretch")
+    with insight_col2:
+        with st.container(key="carbon-analysis-panel-insights"):
+            st.subheader("专业判断")
+            for insight in insights:
+                st.markdown(f"- {insight}")
+            if not efficiency_df.empty:
+                st.dataframe(
+                    efficiency_df[["方案", "碳排效率(kg/km)", "单车平均碳排(kg/车)", "干线碳排占比(%)"]],
+                    hide_index=True,
+                    width="stretch",
+                )
+
+anchor("sec-analysis")
+with st.container(key="carbon-analysis-card-compare"):
+    st.subheader("三方案对比")
+    compare_col1, compare_col2 = st.columns(2)
+    with compare_col1:
+        st.plotly_chart(
+            build_scenario_emission_figure(scenario_df, title="三方案综合碳排对比"),
+            width="stretch",
+        )
+    with compare_col2:
+        fig_breakdown = build_scenario_breakdown_figure(
+            scenario_df,
+            value_columns=("末端碳排(kg CO2)", "干线碳排(kg CO2)"),
+            legend_labels=("末端配送", "干线补给"),
+            title="方案碳排结构拆解",
+        )
+        apply_green_chart_theme(
+            fig_breakdown,
+            height=360,
+            showlegend=True,
+            legend_x=0.5,
+            legend_y=-0.2,
+            legend_xanchor="center",
+            legend_yanchor="top",
+            bottom_margin=72,
+        )
+        st.plotly_chart(fig_breakdown, width="stretch")
+
+    efficiency_col1, efficiency_col2 = st.columns([0.95, 1.05])
+    with efficiency_col1:
+        fig_efficiency = px.bar(
+            efficiency_df,
+            x="方案",
+            y="碳排效率(kg/km)",
+            text_auto=".4f",
+            color_discrete_sequence=["#80B332"],
+            title="三方案单位里程碳排对比",
+        )
+        fig_efficiency.update_xaxes(tickangle=-10)
+        apply_green_chart_theme(fig_efficiency, height=380, showlegend=False, top_margin=76, bottom_margin=46)
+        tune_bar_value_labels(fig_efficiency, orientation="v", headroom_ratio=0.22)
+        st.plotly_chart(fig_efficiency, width="stretch")
+    with efficiency_col2:
+        st.dataframe(
+            scenario_df[
+                [
+                    "方案",
+                    "总碳排放(kg CO2)",
+                    "减排量(kg CO2)",
+                    "减排比例(%)",
+                    "总距离(km)",
+                    "车辆数",
+                    "中转枢纽数",
+                ]
+            ],
+            hide_index=True,
+            width="stretch",
+        )
+
+anchor("sec-routes")
+with st.container(key="carbon-analysis-card-routes"):
+    st.subheader("三方案路线展示")
+    st.selectbox(
+        "选择路线展示方案",
+        options=list(scenario_options.keys()),
+        format_func=lambda scenario_id: scenario_options.get(scenario_id, scenario_id),
+        key="carbon_analysis_selected_scenario_id",
     )
 
+    active_scenario = get_scenario_record(comparison_scenarios, st.session_state.get("carbon_analysis_selected_scenario_id") or default_scenario_id) or comparison_scenarios[0]
+    active_route_results = list(active_scenario.get("route_results", []) or [])
+    active_depot_results = list(active_scenario.get("depot_results", []) or [])
+    active_route_context = build_route_context(nodes, active_depot_results)
+    active_route_df = build_route_overview_dataframe(active_route_results, active_route_context)
+    active_dispatch_df = build_route_dispatch_dataframe(active_route_results, active_route_context)
+    active_summary_df = scenario_df[scenario_df["方案ID"] == str(active_scenario.get("id") or "")]
+    active_summary_row = active_summary_df.iloc[0].to_dict() if not active_summary_df.empty else {}
+
+    st.caption(str(active_scenario.get("description") or ""))
+
+    route_metric_col1, route_metric_col2, route_metric_col3, route_metric_col4 = st.columns(4)
+    with route_metric_col1:
+        st.metric("当前方案碳排", f"{float(active_summary_row.get('总碳排放(kg CO2)', 0) or 0):.2f} kg CO2")
+    with route_metric_col2:
+        st.metric("当前方案距离", f"{float(active_summary_row.get('总距离(km)', 0) or 0):.2f} km")
+    with route_metric_col3:
+        st.metric("当前方案车辆数", f"{int(active_summary_row.get('车辆数', 0) or 0)} 辆")
+    with route_metric_col4:
+        st.metric("当前方案枢纽数", f"{int(active_summary_row.get('中转枢纽数', 0) or 0)} 个")
+
+    route_tab_map, route_tab_summary, route_tab_segments = st.tabs(["地图展示", "路线汇总", "分段明细"])
+
+    with route_tab_map:
+        route_map = build_route_map(nodes, active_route_results, active_depot_results, demands_dict, active_route_context)
+        if route_map is not None:
+            st_folium(route_map, width="100%", height=560)
+        else:
+            st.info("当前方案没有可展示的路线地图。")
+
+    with route_tab_summary:
+        summary_view_col1, summary_view_col2 = st.columns([1.0, 1.0])
+        with summary_view_col1:
+            if not active_route_df.empty:
+                fig_route = px.bar(
+                    active_route_df.sort_values("总碳排放(kg CO2)", ascending=False),
+                    x="路线编号",
+                    y="总碳排放(kg CO2)",
+                    text_auto=".2f",
+                    color_discrete_sequence=["#2F6BFF"],
+                    title="当前方案单路线碳排放",
+                )
+                fig_route.update_xaxes(tickangle=-12)
+                apply_green_chart_theme(fig_route, height=380, showlegend=False, top_margin=76, bottom_margin=48)
+                tune_bar_value_labels(fig_route, orientation="v", headroom_ratio=0.24)
+                st.plotly_chart(fig_route, width="stretch")
+        with summary_view_col2:
+            if not active_dispatch_df.empty:
+                st.dataframe(
+                    active_dispatch_df[
+                        ["路线编号", "车辆", "车型", "场馆数", "总装载(kg)", "总距离(km)", "总碳排放(kg CO2)"]
+                    ],
+                    hide_index=True,
+                    width="stretch",
+                )
+            else:
+                st.info("当前方案暂无可展示的路线汇总。")
+
+    with route_tab_segments:
+        if active_route_results:
+            for idx, route_result in enumerate(active_route_results, start=1):
+                route_row = active_route_df.iloc[idx - 1].to_dict() if idx - 1 < len(active_route_df) else {}
+                segment_rows = build_route_segment_rows(route_result, active_route_context)
+                with st.expander(f"{route_row.get('路线编号', f'路线{idx}')}：{route_row.get('车辆', route_result.get('vehicle_name', f'车辆{idx}'))}", expanded=False):
+                    st.markdown(f"**路线** {route_row.get('路线', '--')}")
+                    seg_metric_col1, seg_metric_col2, seg_metric_col3, seg_metric_col4 = st.columns(4)
+                    with seg_metric_col1:
+                        st.metric("总装载量", f"{float(route_result.get('total_load_kg', 0) or 0):.1f} kg")
+                    with seg_metric_col2:
+                        st.metric("总距离", f"{float(route_result.get('total_distance_km', 0) or 0):.2f} km")
+                    with seg_metric_col3:
+                        st.metric("总碳排放", f"{float(route_result.get('total_carbon_kg', 0) or 0):.2f} kg CO2")
+                    with seg_metric_col4:
+                        st.metric("碳排效率", f"{float(route_row.get('碳排效率(kg/km)', 0) or 0):.4f} kg/km")
+
+                    if segment_rows:
+                        segment_df = pd.DataFrame(segment_rows)
+                        seg_col1 = st.container()
+                        seg_col2 = st.container()
+                        with seg_col1:
+                            fig_segment = px.bar(
+                                segment_df,
+                                x="序号",
+                                y="碳排放(kg CO2)",
+                                text_auto=".3f",
+                                color_discrete_sequence=["#80B332"],
+                                title="分段碳排分布",
+                            )
+                            fig_segment.update_traces(
+                                customdata=segment_df[["分段", "距离(km)", "装载(吨)"]].values,
+                                hovertemplate=(
+                                    "<b>分段 %{x}</b><br>"
+                                    "路径：%{customdata[0]}<br>"
+                                    "距离：%{customdata[1]:.2f} km<br>"
+                                    "装载：%{customdata[2]:.3f} 吨<br>"
+                                    "碳排放：%{y:.4f} kg CO2<extra></extra>"
+                                ),
+                            )
+                            fig_segment.update_xaxes(title="分段序号", tickmode="linear", dtick=1, tickfont={"size": 11})
+                            apply_green_chart_theme(fig_segment, height=420, showlegend=False, top_margin=76, bottom_margin=72)
+                            tune_bar_value_labels(fig_segment, orientation="v", headroom_ratio=0.24)
+                            st.plotly_chart(fig_segment, width="stretch")
+                        with seg_col2:
+                            st.dataframe(segment_df, hide_index=True, width="stretch")
+                            st.caption("柱状图横坐标使用分段序号，完整路径名称可在下表或悬停提示中查看。")
+                    else:
+                        st.info("该路线暂无可展示的分段测算结果。")
+        else:
+            st.info("当前方案暂无可展示的分段明细。")
+
+anchor("sec-simulation")
+with st.container(key="carbon-analysis-card-simulation"):
+    st.subheader("车型模拟")
+    sim_col1, sim_col2 = st.columns(2)
+    with sim_col1:
+        fig_factor = px.bar(
+            vehicle_factor_df,
+            x="车型",
+            y="主碳因子(kg/tkm)",
+            color="等级",
+            text_auto=".2f",
+            color_discrete_map=RATING_COLOR_MAP,
+            title="各车型主碳因子对比（越低越好）",
+        )
+        fig_factor.update_xaxes(tickangle=-10)
+        apply_green_chart_theme(
+            fig_factor,
+            height=410,
+            showlegend=True,
+            legend_x=0.5,
+            legend_y=-0.24,
+            legend_xanchor="center",
+            legend_yanchor="top",
+            top_margin=76,
+            bottom_margin=76,
+        )
+        tune_bar_value_labels(fig_factor, orientation="v", headroom_ratio=0.22)
+        st.plotly_chart(fig_factor, width="stretch")
+    with sim_col2:
+        fig_sim = px.bar(
+            simulation_df,
+            x="车型",
+            y="模拟碳排放(kg CO2)",
+            text_auto=".1f",
+            color_discrete_sequence=["#2F6BFF"],
+            title="不同车型的模拟碳排放",
+        )
+        fig_sim.update_xaxes(tickangle=-10)
+        apply_green_chart_theme(fig_sim, height=410, showlegend=False, top_margin=76, bottom_margin=52)
+        tune_bar_value_labels(fig_sim, orientation="v", headroom_ratio=0.22)
+        st.plotly_chart(fig_sim, width="stretch")
+
+    best_simulated = simulation_df.loc[simulation_df["模拟碳排放(kg CO2)"].idxmin()] if not simulation_df.empty else None
+    worst_simulated = simulation_df.loc[simulation_df["模拟碳排放(kg CO2)"].idxmax()] if not simulation_df.empty else None
+    if best_simulated is not None and worst_simulated is not None:
+        compare_left, compare_right = st.columns(2)
+        with compare_left:
+            st.success(
+                f"最优模拟车型：{best_simulated['车型']}\n模拟碳排放：{best_simulated['模拟碳排放(kg CO2)']:.2f} kg CO2\n减排比例：{best_simulated['减排比例(%)']:.1f}%"
+            )
+        with compare_right:
+            st.error(
+                f"最高排放车型：{worst_simulated['车型']}\n模拟碳排放：{worst_simulated['模拟碳排放(kg CO2)']:.2f} kg CO2\n减排比例：{worst_simulated['减排比例(%)']:.1f}%"
+            )
+
+    st.dataframe(
+        vehicle_factor_df[["车型", "主碳因子(kg/tkm)", "空驶因子(kg/km)", "冷启动(kg)", "等级"]],
+        hide_index=True,
+        width="stretch",
+    )
+
+anchor("sec-sensitivity")
+with st.container(key="carbon-analysis-card-sensitivity"):
+    st.subheader("敏感性分析")
+    fig_sensitivity = px.line(
+        sensitivity_df,
+        x="距离(km)",
+        y="碳排放(kg CO2)",
+        color="车型",
+        title="距离变化下的碳排放敏感性",
+        markers=True,
+    )
+    apply_green_chart_theme(
+        fig_sensitivity,
+        height=400,
+        showlegend=True,
+        legend_x=0.5,
+        legend_y=-0.24,
+        legend_xanchor="center",
+        legend_yanchor="top",
+        bottom_margin=80,
+    )
+    st.plotly_chart(fig_sensitivity, width="stretch")
+
+    sensitivity_col1, sensitivity_col2, sensitivity_col3 = st.columns(3)
+    with sensitivity_col1:
+        st.metric("分析基准距离", f"{actual_total_distance:.2f} km")
+    with sensitivity_col2:
+        st.metric("分析总需求", f"{total_demand_kg / 1000.0:.2f} 吨")
+    with sensitivity_col3:
+        st.metric("当前减排比例", f"{reduction_pct:.1f}%")
+
+    reference_df = sensitivity_df[sensitivity_df["距离系数"].isin(["1.0x", "1.5x"])]
+    st.dataframe(reference_df, hide_index=True, width="stretch")
+
+st.caption(f"数据来源：路径优化结果 | 计算时间：{results.get('timestamp', '未知')}")
 render_page_nav("pages/7_path_optimization.py", "pages/8_results.py", key_prefix="carbon-analysis-nav")

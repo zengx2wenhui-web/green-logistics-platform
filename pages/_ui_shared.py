@@ -6,9 +6,28 @@ from pathlib import Path
 
 import streamlit as st
 
+from pages._bottom_nav import render_page_nav
+
 
 _APP_ROOT = Path(__file__).resolve().parents[1]
 _SIDEBAR_ICON_DIR = _APP_ROOT / "assets" / "icons" / "首页"
+_DATA_STATUS_SESSION_KEYS = {
+    "warehouse": "warehouse_data_status",
+    "venues": "venues_data_status",
+    "materials": "materials_data_status",
+    "vehicles": "vehicles_data_status",
+}
+_DATA_STATUS_LABELS = {
+    "empty": "未设置",
+    "dirty": "未保存",
+    "saved": "已设置",
+}
+_DATA_STATUS_DISPLAY_NAMES = {
+    "warehouse": "仓库设置",
+    "venues": "场馆录入",
+    "materials": "物资需求",
+    "vehicles": "车辆配置",
+}
 
 
 def inject_sidebar_navigation_label() -> None:
@@ -38,6 +57,182 @@ def _image_to_data_uri(path: Path) -> str:
 
     encoded = base64.b64encode(path.read_bytes()).decode("utf-8")
     return f"data:{mime};base64,{encoded}"
+
+
+def _sum_material_demands_kg(material_demands: dict) -> float:
+    total_demand_kg = 0.0
+    for venue in material_demands.values():
+        if not isinstance(venue, dict):
+            continue
+        for items in venue.values():
+            if not isinstance(items, dict):
+                continue
+            for material in items.values():
+                if isinstance(material, dict):
+                    total_demand_kg += float(material.get("weight_kg", 0) or 0)
+    return total_demand_kg
+
+
+def _sum_demands_kg(demands: dict) -> float:
+    total_demand_kg = 0.0
+    for demand in demands.values():
+        if isinstance(demand, dict):
+            total_demand_kg += float(
+                demand.get(
+                    "总需求",
+                    sum(
+                        value
+                        for key, value in demand.items()
+                        if isinstance(value, (int, float)) and key != "总需求"
+                    ),
+                )
+                or 0
+            )
+            continue
+        try:
+            total_demand_kg += float(demand or 0)
+        except (TypeError, ValueError):
+            continue
+    return total_demand_kg
+
+
+def _infer_data_status(data_key: str) -> str:
+    warehouse = st.session_state.get("warehouse", {})
+    venues = st.session_state.get("venues", [])
+    demands = st.session_state.get("demands", {})
+    vehicles = st.session_state.get("vehicles", [])
+    material_demands = st.session_state.get("material_demands", {})
+
+    if data_key == "warehouse":
+        if warehouse.get("lng") is not None and warehouse.get("lat") is not None:
+            return "saved"
+        if any(
+            warehouse.get(field)
+            for field in ("name", "address")
+        ):
+            return "dirty"
+        return "empty"
+
+    if data_key == "venues":
+        return "saved" if venues else "empty"
+
+    if data_key == "materials":
+        total_demand_kg = _sum_material_demands_kg(material_demands)
+        if total_demand_kg <= 0:
+            total_demand_kg = _sum_demands_kg(demands)
+        return "saved" if total_demand_kg > 0 else "empty"
+
+    if data_key == "vehicles":
+        fleet_vehicles = sum(
+            int(item.get("count_max", item.get("count", 0)) or 0) for item in vehicles
+        )
+        return "saved" if fleet_vehicles > 0 else "empty"
+
+    return "empty"
+
+
+def init_data_status_state() -> None:
+    for data_key, session_key in _DATA_STATUS_SESSION_KEYS.items():
+        if session_key not in st.session_state:
+            st.session_state[session_key] = _infer_data_status(data_key)
+
+
+def get_data_status(data_key: str) -> str:
+    init_data_status_state()
+    return st.session_state.get(_DATA_STATUS_SESSION_KEYS[data_key], "empty")
+
+
+def set_data_status(data_key: str, status: str) -> None:
+    init_data_status_state()
+    st.session_state[_DATA_STATUS_SESSION_KEYS[data_key]] = status
+
+
+def is_data_saved(data_key: str) -> bool:
+    return get_data_status(data_key) == "saved"
+
+
+def get_data_status_label(data_key: str) -> str:
+    return _DATA_STATUS_LABELS.get(get_data_status(data_key), "未设置")
+
+
+def _format_sidebar_status_value(
+    data_key: str,
+    *,
+    status: str,
+    warehouse_name: str,
+    venues_count: int,
+    fleet_vehicles: int,
+    total_demand_kg: float,
+) -> str:
+    if data_key == "warehouse":
+        detail = warehouse_name or "未命名仓库"
+    elif data_key == "venues":
+        detail = f"{venues_count}个场馆"
+    elif data_key == "materials":
+        detail = f"{total_demand_kg:.0f} kg"
+    elif data_key == "vehicles":
+        detail = f"{fleet_vehicles}辆"
+    else:
+        detail = ""
+
+    if status == "saved":
+        return detail or "已设置"
+    if status == "dirty":
+        return f"未保存（{detail}）" if detail else "未保存"
+    return "未设置"
+
+
+def require_saved_data(
+    required_keys: list[str],
+    *,
+    page_label: str,
+    back_page: str | None = None,
+    back_label: str = "返回上一步",
+    key_prefix: str = "data-guard",
+) -> None:
+    pending = [data_key for data_key in required_keys if not is_data_saved(data_key)]
+    if not pending:
+        return
+
+    pending_labels = "、".join(_DATA_STATUS_DISPLAY_NAMES[data_key] for data_key in pending)
+    
+    st.markdown("<div style='margin-top: 300px;'></div>", unsafe_allow_html=True)
+    
+    st.warning(f"当前无法进入{page_label}，请先完成并保存：{pending_labels}。")
+
+    st.markdown("<div style='margin-top: 50px;'></div>", unsafe_allow_html=True)
+    if back_page:
+        _, center_col, _ = st.columns([2.2, 1.6, 2.2])
+        with center_col:
+            if st.button(back_label, key=f"{key_prefix}-back", width="stretch"):
+                st.switch_page(back_page)
+    st.stop()
+
+
+def render_pending_step_state(
+    *,
+    anchor_name: str,
+    container_key: str,
+    warning_message: str,
+    info_message: str,
+    prev_page: str | None,
+    next_page: str | None,
+    key_prefix: str,
+    next_block_message: str,
+) -> None:
+    anchor(anchor_name)
+    with st.container(key=container_key):
+        st.warning(warning_message)
+        st.info(info_message)
+    render_page_nav(
+        prev_page,
+        next_page,
+        key_prefix=key_prefix,
+        can_go_next=False,
+        next_block_message=next_block_message,
+    )
+    st.stop()
+    raise SystemExit
 
 
 def render_download_button(
@@ -70,6 +265,7 @@ def render_download_button(
 
 
 def _get_sidebar_summary() -> dict[str, int | float | bool]:
+    init_data_status_state()
     warehouse = st.session_state.get("warehouse", {})
     venues = st.session_state.get("venues", [])
     vehicles = st.session_state.get("vehicles", [])
@@ -110,8 +306,45 @@ def _get_sidebar_summary() -> dict[str, int | float | bool]:
                 except (TypeError, ValueError):
                     continue
 
+    warehouse_status = get_data_status("warehouse")
+    venues_status = get_data_status("venues")
+    materials_status = get_data_status("materials")
+    vehicles_status = get_data_status("vehicles")
+    warehouse_name = str(warehouse.get("name", "") or "").strip()
+
     return {
-        "warehouse_set": bool(warehouse.get("lng")),
+        "warehouse_status": _format_sidebar_status_value(
+            "warehouse",
+            status=warehouse_status,
+            warehouse_name=warehouse_name,
+            venues_count=len(venues),
+            fleet_vehicles=fleet_vehicles,
+            total_demand_kg=total_demand_kg,
+        ),
+        "venues_status": _format_sidebar_status_value(
+            "venues",
+            status=venues_status,
+            warehouse_name=warehouse_name,
+            venues_count=len(venues),
+            fleet_vehicles=fleet_vehicles,
+            total_demand_kg=total_demand_kg,
+        ),
+        "materials_status": _format_sidebar_status_value(
+            "materials",
+            status=materials_status,
+            warehouse_name=warehouse_name,
+            venues_count=len(venues),
+            fleet_vehicles=fleet_vehicles,
+            total_demand_kg=total_demand_kg,
+        ),
+        "vehicles_status": _format_sidebar_status_value(
+            "vehicles",
+            status=vehicles_status,
+            warehouse_name=warehouse_name,
+            venues_count=len(venues),
+            fleet_vehicles=fleet_vehicles,
+            total_demand_kg=total_demand_kg,
+        ),
         "venues_geocoded": sum(1 for venue in venues if venue.get("geocoded")),
         "fleet_vehicles": fleet_vehicles,
         "total_demand_kg": total_demand_kg,
@@ -165,10 +398,10 @@ def render_sidebar_navigation() -> None:
             "物资": _SIDEBAR_ICON_DIR / "物资.png",
         }
         status_rows = [
-            ("仓库", "已设置" if summary["warehouse_set"] else "未设置"),
-            ("场馆", f'{summary["venues_geocoded"]} 个已定位'),
-            ("车辆", f'{summary["fleet_vehicles"]} 辆已配置'),
-            ("物资", f'{summary["total_demand_kg"]:.0f} kg'),
+            ("仓库", summary["warehouse_status"]),
+            ("场馆", summary["venues_status"]),
+            ("物资", summary["materials_status"]),
+            ("车辆", summary["vehicles_status"]),
         ]
 
         for label, value in status_rows:
@@ -356,7 +589,16 @@ def inject_base_style() -> None:
             --glp-top-nav-title-gap: -50px;
         }
 
-        [data-testid="stHeader"],
+        header[data-testid="stHeader"] {
+            background: transparent !important;
+            z-index: 10001 !important;
+        }
+
+        [data-testid="stHeader"] {
+            background: transparent !important;
+            z-index: 10001 !important;
+        }
+
         .stAppToolbar,
         [data-testid="stToolbar"],
         [data-testid="stToolbarActions"],
@@ -408,34 +650,9 @@ def inject_base_style() -> None:
             max-width: var(--glp-sidebar-width) !important;
         }
 
-        html.glp-sidebar-collapsed [data-testid="stSidebar"],
-        body.glp-sidebar-collapsed [data-testid="stSidebar"] {
-            min-width: var(--glp-sidebar-width) !important;
-            max-width: var(--glp-sidebar-width) !important;
-            width: var(--glp-sidebar-width) !important;
-            margin-left: 0 !important;
-            transform: none !important;
-            overflow: hidden !important;
-        }
-
-        html.glp-sidebar-collapsed [data-testid="stSidebar"] > div:first-child,
-        body.glp-sidebar-collapsed [data-testid="stSidebar"] > div:first-child {
-            background: transparent !important;
-        }
-
-        html.glp-sidebar-collapsed div[data-testid="stSidebarContent"],
-        html.glp-sidebar-collapsed div[data-testid="stSidebarUserContent"],
-        body.glp-sidebar-collapsed div[data-testid="stSidebarContent"],
-        body.glp-sidebar-collapsed div[data-testid="stSidebarUserContent"] {
-            opacity: 0 !important;
+        [data-testid="stSidebarResizer"] {
+            display: none !important;
             pointer-events: none !important;
-            transform: translateX(calc(var(--glp-sidebar-width) * -1)) !important;
-            transition: opacity 0.16s ease, transform 0.16s ease !important;
-        }
-
-        div[data-testid="stSidebarContent"],
-        div[data-testid="stSidebarUserContent"] {
-            transition: opacity 0.16s ease, transform 0.16s ease;
         }
 
         [data-testid="stSidebar"] > div:first-child {
@@ -461,12 +678,11 @@ def inject_base_style() -> None:
         [data-testid="collapsedControl"],
         button[kind="header"][aria-label*="sidebar"],
         [data-testid="stSidebarCollapseButton"] {
-            opacity: 0 !important;
-            pointer-events: none !important;
-            position: absolute !important;
-            width: 1px !important;
-            height: 1px !important;
-            overflow: hidden !important;
+            display: flex !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            pointer-events: auto !important;
+            z-index: 10002 !important;
         }
 
         [data-testid="stSidebarNav"] {
@@ -849,7 +1065,6 @@ def render_top_nav(
 
             navs.slice(0, -1).forEach((node) => node.remove());
 
-            const sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
             const toggleButton = nav.querySelector('.glp-nav-toggle');
             const toggleIcon = toggleButton?.querySelector('.glp-nav-toggle-text');
             const refreshIcon = nav.querySelector('.glp-icon-refresh');
@@ -862,30 +1077,40 @@ def render_top_nav(
               })
               .filter(([, section]) => section);
 
+            const getSidebar = () => parentDoc.querySelector('[data-testid="stSidebar"]');
+
             const sidebarExpanded = () => {
-              return !parentDoc.documentElement.classList.contains('glp-sidebar-collapsed');
+              const sidebar = getSidebar();
+              if (!sidebar) {
+                return false;
+              }
+              const expanded = sidebar.getAttribute('aria-expanded');
+              if (expanded === 'false') {
+                return false;
+              }
+              if (expanded === 'true') {
+                return true;
+              }
+              return sidebar.getBoundingClientRect().width >= 160;
             };
 
-            const applySidebarState = (expanded) => {
-              const method = expanded ? 'remove' : 'add';
-              parentDoc.documentElement.classList[method]('glp-sidebar-collapsed');
-              parentDoc.body.classList[method]('glp-sidebar-collapsed');
-              try {
-                parentWin.localStorage.setItem('glp-sidebar-expanded', expanded ? '1' : '0');
-              } catch (error) {
-              }
+            const getSidebarToggleControl = () => {
+              const candidates = [
+                parentDoc.querySelector('[data-testid="collapsedControl"]'),
+                parentDoc.querySelector('[data-testid="stSidebarCollapseButton"]'),
+                parentDoc.querySelector('button[kind="header"][aria-label*="sidebar"]'),
+                parentDoc.querySelector('button[aria-label*="sidebar"]'),
+              ];
+              return candidates.find((candidate) => candidate && typeof candidate.click === 'function') || null;
             };
 
-            const restoreSidebarState = () => {
-              try {
-                const saved = parentWin.localStorage.getItem('glp-sidebar-expanded');
-                if (saved === '0') {
-                  applySidebarState(false);
-                } else if (saved === '1') {
-                  applySidebarState(true);
-                }
-              } catch (error) {
+            const triggerNativeSidebarToggle = () => {
+              const nativeToggle = getSidebarToggleControl();
+              if (!nativeToggle) {
+                return false;
               }
+              nativeToggle.click();
+              return true;
             };
 
             const pinNav = () => {
@@ -893,9 +1118,10 @@ def render_top_nav(
               nav.style.top = '0px';
               nav.style.zIndex = '9999';
 
+              const sidebar = getSidebar();
               const sidebarWidth = sidebar
-                ? Math.max(sidebar.getBoundingClientRect().width, 214)
-                : 214;
+                ? Math.max(sidebar.getBoundingClientRect().width, 0)
+                : 0;
               const navLeft = sidebarWidth;
               const navWidth = Math.max(parentWin.innerWidth - navLeft, 320);
 
@@ -1007,9 +1233,12 @@ def render_top_nav(
               toggleButton.addEventListener('click', (event) => {
                 event.preventDefault();
                 event.stopPropagation();
-                applySidebarState(!sidebarExpanded());
+                if (!triggerNativeSidebarToggle()) {
+                  return;
+                }
                 window.setTimeout(syncNavState, 0);
                 window.setTimeout(syncNavState, 120);
+                window.setTimeout(syncNavState, 260);
               }, { signal });
             }
 
@@ -1023,7 +1252,16 @@ def render_top_nav(
             parentWin.addEventListener('scroll', syncNavState, { passive: true, signal });
             parentWin.addEventListener('resize', syncNavState, { passive: true, signal });
 
-            restoreSidebarState();
+            const sidebar = getSidebar();
+            if (sidebar && typeof MutationObserver !== 'undefined') {
+              const observer = new MutationObserver(() => syncNavState());
+              observer.observe(sidebar, {
+                attributes: true,
+                attributeFilter: ['aria-expanded', 'style', 'class'],
+              });
+              signal.addEventListener('abort', () => observer.disconnect(), { once: true });
+            }
+
             syncNavState();
             return true;
           };

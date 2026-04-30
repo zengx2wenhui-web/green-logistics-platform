@@ -16,13 +16,23 @@ if str(_APP_ROOT) not in sys.path:
 from pages._bottom_nav import render_page_nav
 from pages._ui_shared import (
     anchor,
+    get_data_status,
     inject_base_style,
     inject_sidebar_navigation_label,
+    is_data_saved,
+    render_pending_step_state,
     render_sidebar_navigation,
+    set_data_status,
     render_title,
     render_top_nav,
 )
 from utils.vehicle_lib import VEHICLE_LIB
+from utils.vehicle_environment import (
+    DEFAULT_H2_SOURCE,
+    DEFAULT_SEASON,
+    build_vehicle_environment_config,
+    resolve_vehicle_environment_config,
+)
 
 
 VEHICLE_META = {
@@ -179,18 +189,217 @@ def update_current_vehicle(step: int, vehicle_ids: list[str]) -> None:
     st.session_state.current_vehicle_id = vehicle_ids[(current_idx + step) % len(vehicle_ids)]
 
 
+def render_global_season_radio() -> None:
+    st.session_state.global_season = st.radio(
+        "季节选择",
+        options=["春", "夏", "秋", "冬"],
+        index=["春", "夏", "秋", "冬"].index(st.session_state.global_season),
+        key="global_season_radio",
+        help="季节会影响新能源车辆的热管理能耗。",
+        horizontal=True,
+    )
+
+
+def render_global_h2_source_radio() -> None:
+    st.session_state.global_h2_source = st.radio(
+        "FCEV 氢气来源",
+        options=["灰氢", "工业副产氢", "绿氢"],
+        index=["灰氢", "工业副产氢", "绿氢"].index(st.session_state.global_h2_source),
+        key="global_h2_source_radio",
+        help="氢气来源会影响氢燃料电池车辆的全生命周期碳排强度。",
+        horizontal=True,
+    )
+
+
+def get_saved_vehicle_environment_config() -> dict[str, object]:
+    return resolve_vehicle_environment_config(
+        st.session_state.get("vehicles", []),
+        st.session_state.get("vehicle_environment_config"),
+        fallback_season=st.session_state.get("global_season", DEFAULT_SEASON),
+        fallback_h2_source=st.session_state.get("global_h2_source", DEFAULT_H2_SOURCE),
+    )
+
+
+def build_vehicle_signature(
+    vehicle_configs: dict[str, dict],
+    *,
+    environment_config: dict[str, object],
+) -> tuple[tuple[str, object, float], ...]:
+    configs = tuple(
+        sorted(
+            (
+                vehicle_id,
+                int(config.get("count_max", 0) or 0),
+                round(float(config.get("load_ton", 0) or 0.0), 4),
+            )
+            for vehicle_id, config in vehicle_configs.items()
+            if int(config.get("count_max", 0) or 0) > 0
+        )
+    )
+    signature_parts = list(configs)
+    if environment_config.get("has_new_energy"):
+        signature_parts.append(("__season__", str(environment_config.get("season") or ""), 0.0))
+    if environment_config.get("has_fcev"):
+        signature_parts.append(("__h2_source__", str(environment_config.get("h2_source") or ""), 0.0))
+    return tuple(signature_parts)
+
+
+def build_saved_vehicle_signature() -> tuple[tuple[str, object, float], ...]:
+    saved_configs = {
+        str(item.get("vehicle_type")): item
+        for item in st.session_state.get("vehicles", [])
+        if item.get("vehicle_type")
+    }
+    return build_vehicle_signature(
+        saved_configs,
+        environment_config=get_saved_vehicle_environment_config(),
+    )
+
+
+def build_vehicle_save_payload(
+    vehicle_types: list[dict],
+    vehicle_configs: dict[str, dict],
+) -> list[dict]:
+    payload: list[dict] = []
+    for vehicle in vehicle_types:
+        vehicle_id = vehicle["id"]
+        config = vehicle_configs.get(vehicle_id)
+        if not config:
+            continue
+
+        count_max = int(config.get("count_max", 0) or 0)
+        load_ton = float(config.get("load_ton", 0) or 0.0)
+        if count_max <= 0 or load_ton <= 0:
+            continue
+
+        payload.append(
+            {
+                "vehicle_type": vehicle_id,
+                "name": vehicle["name"],
+                "fuel_type": vehicle["fuel_type"],
+                "count_max": count_max,
+                "load_ton": load_ton,
+            }
+        )
+    return payload
+
+
+def set_vehicle_save_notice(message: str, level: str = "success") -> None:
+    st.session_state.vehicle_save_notice = {
+        "message": message,
+        "level": level,
+    }
+
+
+def render_vehicle_save_notice():
+    placeholder = st.empty()
+    notice = st.session_state.get("vehicle_save_notice")
+    if not isinstance(notice, dict):
+        return placeholder
+
+    message = str(notice.get("message", "") or "").strip()
+    level = str(notice.get("level", "info") or "info").strip().lower()
+    if message:
+        if level == "success":
+            placeholder.success(message)
+        elif level == "warning":
+            placeholder.warning(message)
+        else:
+            placeholder.info(message)
+
+    st.session_state.vehicle_save_notice = None
+    return placeholder
+
+
 st.set_page_config(page_title="车辆配置", page_icon="🚛", layout="wide", initial_sidebar_state="expanded")
+if "vehicles" not in st.session_state:
+    st.session_state.vehicles = []
+if "vehicle_environment_config" not in st.session_state and st.session_state.get("vehicles"):
+    st.session_state.vehicle_environment_config = resolve_vehicle_environment_config(
+        st.session_state.get("vehicles", []),
+        None,
+        fallback_season=st.session_state.get("global_season", DEFAULT_SEASON),
+        fallback_h2_source=st.session_state.get("global_h2_source", DEFAULT_H2_SOURCE),
+    )
+saved_vehicle_environment_config = get_saved_vehicle_environment_config()
+if st.session_state.get("vehicles"):
+    st.session_state.vehicle_environment_config = saved_vehicle_environment_config
+if "global_season" not in st.session_state:
+    st.session_state.global_season = str(saved_vehicle_environment_config.get("season") or DEFAULT_SEASON)
+if "global_h2_source" not in st.session_state:
+    st.session_state.global_h2_source = str(saved_vehicle_environment_config.get("h2_source") or DEFAULT_H2_SOURCE)
+if "vehicle_save_notice" not in st.session_state:
+    st.session_state.vehicle_save_notice = None
+
+vehicle_types = build_vehicle_catalog()
+vehicle_ids = [vehicle["id"] for vehicle in vehicle_types]
+vehicle_name_by_id = {vehicle["id"]: vehicle["name"] for vehicle in vehicle_types}
+vehicle_by_id = {vehicle["id"]: vehicle for vehicle in vehicle_types}
+vehicle_index_by_id = {vehicle_id: idx for idx, vehicle_id in enumerate(vehicle_ids)}
+
+if "vehicle_saved_signature" not in st.session_state:
+    st.session_state.vehicle_saved_signature = (
+        build_saved_vehicle_signature()
+        if get_data_status("vehicles") == "saved"
+        else None
+    )
+
+current_vehicle_draft_configs: dict[str, dict] = {}
+for vehicle in vehicle_types:
+    vehicle_id = vehicle["id"]
+    existing = get_saved_vehicle_entry(vehicle_id)
+    qty_key = f"qty_{vehicle_id}"
+    load_key = f"load_{vehicle_id}"
+    if qty_key not in st.session_state:
+        st.session_state[qty_key] = int(
+            (existing or {}).get("count_max", (existing or {}).get("count", 0)) or 0
+        )
+    if load_key not in st.session_state:
+        st.session_state[load_key] = float(
+            (existing or {}).get("load_ton", vehicle["max_load_ton_default"])
+            or vehicle["max_load_ton_default"]
+        )
+
+    qty_value = int(st.session_state[qty_key] or 0)
+    load_value = float(st.session_state[load_key] or 0.0)
+    if qty_value > 0 and load_value > 0:
+        current_vehicle_draft_configs[vehicle_id] = {
+            "vehicle_type": vehicle_id,
+            "count_max": qty_value,
+            "load_ton": load_value,
+        }
+
+current_vehicle_signature = build_vehicle_signature(
+    current_vehicle_draft_configs,
+    environment_config=build_vehicle_environment_config(
+        current_vehicle_draft_configs.values(),
+        season=st.session_state.global_season,
+        h2_source=st.session_state.global_h2_source,
+    ),
+)
+saved_vehicle_signature = st.session_state.get("vehicle_saved_signature")
+if saved_vehicle_signature:
+    if current_vehicle_signature == saved_vehicle_signature:
+        set_data_status("vehicles", "saved")
+    else:
+        set_data_status("vehicles", "dirty")
+elif current_vehicle_draft_configs:
+    set_data_status("vehicles", "dirty")
+else:
+    set_data_status("vehicles", "empty")
+
 inject_sidebar_navigation_label()
 inject_base_style()
 render_sidebar_navigation()
 render_top_nav(
-    tabs=[("车型库概览", "sec-overview"), ("环境参数", "sec-environment"), ("在线配置", "sec-online")],
+    tabs=[("车型库概览", "sec-overview"), ("在线配置", "sec-online"), ("环境参数", "sec-environment")],
     active_idx=0,
 )
 
 st.markdown(
     """
     <style>
+    .st-key-vehicles-empty-card,
     .st-key-materials-upload-card,
     .st-key-vehicle-environment-card,
     .st-key-materials-online-card {
@@ -325,28 +534,19 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
 render_title("车辆配置", "从预置车型库中选择车辆，并补充全局环境参数。")
-
-if "vehicles" not in st.session_state:
-    st.session_state.vehicles = []
-if "global_season" not in st.session_state:
-    st.session_state.global_season = "夏"
-if "global_h2_source" not in st.session_state:
-    st.session_state.global_h2_source = "工业副产氢"
-if "vehicle_save_success" not in st.session_state:
-    st.session_state.vehicle_save_success = False
-
-vehicle_types = build_vehicle_catalog()
-vehicle_ids = [vehicle["id"] for vehicle in vehicle_types]
-vehicle_name_by_id = {vehicle["id"]: vehicle["name"] for vehicle in vehicle_types}
-vehicle_by_id = {vehicle["id"]: vehicle for vehicle in vehicle_types}
-vehicle_index_by_id = {vehicle_id: idx for idx, vehicle_id in enumerate(vehicle_ids)}
+if not is_data_saved("materials"):
+    render_pending_step_state(
+        anchor_name="sec-overview",
+        container_key="vehicles-empty-card",
+        warning_message="尚未完成物资需求，请先完成上一步。",
+        info_message="当前页面为车辆与环境配置视图，需要先在“物资需求”页面完成并保存需求数据后，才能继续配置车队。",
+        prev_page="pages/3_materials.py",
+        next_page="pages/7_path_optimization.py",
+        key_prefix="vehicles-guard-nav",
+        next_block_message="请先完成并保存物资需求后，再进入下一步。",
+    )
 current_vehicle_id = sync_vehicle_selectbox(vehicle_ids)
-
-if st.session_state.get("vehicle_save_success", False):
-    st.success("车辆与环境参数已保存")
-    st.session_state.vehicle_save_success = False
 
 with st.container(key="materials-upload-card"):
     anchor("sec-overview")
@@ -417,33 +617,6 @@ with st.container(key="materials-upload-card"):
             update_current_vehicle(1, vehicle_ids)
             st.rerun()
 
-with st.container(key="vehicle-environment-card"):
-    anchor("sec-environment")
-    st.markdown('<div class="glp-vehicle-card-title">全局环境参数配置</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="glp-environment-note">这些参数会在路径优化与碳排放核算中全局生效。</div>',
-        unsafe_allow_html=True,
-    )
-    col_env1, col_env2 = st.columns(2, gap="large")
-    with col_env1:
-        st.session_state.global_season = st.radio(
-            "季节选择",
-            options=["春", "夏", "秋", "冬"],
-            index=["春", "夏", "秋", "冬"].index(st.session_state.global_season),
-            key="global_season_radio",
-            help="季节会影响新能源车辆的热管理能耗。",
-            horizontal=True,
-        )
-    with col_env2:
-        st.session_state.global_h2_source = st.radio(
-            "FCEV 氢气来源",
-            options=["灰氢", "工业副产氢", "绿氢"],
-            index=["灰氢", "工业副产氢", "绿氢"].index(st.session_state.global_h2_source),
-            key="global_h2_source_radio",
-            help="氢气来源会影响氢燃料电池车辆的全生命周期碳排强度。",
-            horizontal=True,
-        )
-
 vehicle_configs: dict[str, dict] = {}
 
 with st.container(key="materials-online-card"):
@@ -477,9 +650,7 @@ with st.container(key="materials-online-card"):
                 title_col, minus_col, num_col, plus_col = st.columns([4.8, 0.8, 1.2, 0.8], vertical_alignment="center")
                 with title_col:
                     st.markdown(
-                        f"<div class='glp-online-item-name'>{escape(vehicle['name'])}"
-                        f"<span style='color:#a0a0a0;font-size:0.85rem;margin-left:0.5rem;'>{escape(fuel_label)}</span>"
-                        f"</div>",
+                        f"<div class='glp-online-item-name'>{escape(vehicle['name'])}</div>",
                         unsafe_allow_html=True,
                     )
                     st.caption(
@@ -508,8 +679,10 @@ with st.container(key="materials-online-card"):
                         help="实际载重 = 车辆真实可投入配送的装载重量，不是法定总质量。",
                     )
                 with load_col2:
-                    st.caption(f"有载碳因子 {vehicle['emission_factor_min']:.3f} kg CO₂/吨km")
-
+                    st.markdown(
+                        f"<div style='text-align: right; padding-right: 15px; color: rgba(49, 51, 63, 0.6); font-size: 0.875rem;'>有载碳因子 {vehicle['emission_factor_min']:.3f} kg CO₂/吨km</div>",
+                        unsafe_allow_html=True
+                    )
                 qty_value = int(st.session_state[qty_key])
                 load_value = float(st.session_state[load_key])
                 if qty_value > 0 and load_value > 0:
@@ -521,6 +694,31 @@ with st.container(key="materials-online-card"):
                         "load_ton": load_value,
                     }
 
+    has_new_energy = any(
+        config["count_max"] > 0 and VEHICLE_LIB.get(vehicle_id, {}).get("is_new_energy", False)
+        for vehicle_id, config in vehicle_configs.items()
+    )
+    has_fcev = vehicle_configs.get("fcev", {}).get("count_max", 0) > 0
+
+    anchor("sec-environment")
+    if has_new_energy:
+        with st.container(key="vehicle-environment-card"):
+            st.markdown('<div class="glp-vehicle-card-title">全局环境参数配置</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="glp-environment-note">这些参数会在路径优化与碳排放核算中全局生效。</div>',
+                unsafe_allow_html=True,
+            )
+
+            if has_fcev:
+                col_env1, col_env2 = st.columns(2, gap="large")
+                with col_env1:
+                    render_global_season_radio()
+                with col_env2:
+                    render_global_h2_source_radio()
+            else:
+                render_global_season_radio()         
+
+                    
     st.markdown("<br><br>", unsafe_allow_html=True)
     st.markdown('<div class="glp-vehicle-card-title">车队汇总</div>', unsafe_allow_html=True)
 
@@ -555,8 +753,44 @@ with st.container(key="materials-online-card"):
     left_spacer, btn_col, right_spacer = st.columns([2, 3, 2])
     with btn_col:
         if st.button("保存车辆与环境配置", type="primary", width='stretch'):
-            st.session_state.vehicles = list(vehicle_configs.values())
-            st.session_state.vehicle_save_success = True
-            st.rerun()
+            if not vehicle_configs:
+                message = "请至少配置一类车辆后再保存。"
+                set_vehicle_save_notice(message, level="warning")
+                st.rerun()
+            else:
+                next_environment_config = build_vehicle_environment_config(
+                    vehicle_configs.values(),
+                    season=st.session_state.global_season,
+                    h2_source=st.session_state.global_h2_source,
+                )
+                next_signature = build_vehicle_signature(
+                    vehicle_configs,
+                    environment_config=next_environment_config,
+                )
+                if saved_vehicle_signature == next_signature and st.session_state.get("vehicles"):
+                    st.session_state.vehicle_environment_config = next_environment_config
+                    st.session_state.vehicle_saved_signature = next_signature
+                    message = "当前车辆与环境配置已保存，无需重复保存。"
+                    set_vehicle_save_notice(message, level="info")
+                    set_data_status("vehicles", "saved")
+                    st.rerun()
+                else:
+                    st.session_state.vehicles = build_vehicle_save_payload(vehicle_types, vehicle_configs)
+                    st.session_state.vehicle_environment_config = next_environment_config
+                    st.session_state.vehicle_saved_signature = next_signature
+                    set_data_status("vehicles", "saved")
+                    message = "车辆与环境配置已保存。"
+                    set_vehicle_save_notice(message, level="success")
+                    st.rerun()
 
-render_page_nav("pages/3_materials.py", "pages/7_path_optimization.py", key_prefix="vehicles-nav")
+    left_spacer, notice_col, right_spacer = st.columns([2, 3, 2])
+    with notice_col:
+        render_vehicle_save_notice()
+
+render_page_nav(
+    "pages/3_materials.py",
+    "pages/7_path_optimization.py",
+    key_prefix="vehicles-nav",
+    can_go_next=is_data_saved("vehicles"),
+    next_block_message="车辆与环境配置尚未保存，请先点击【保存车辆与环境配置】。",
+)

@@ -20,8 +20,11 @@ from pages._ui_shared import (
     anchor,
     inject_base_style,
     inject_sidebar_navigation_label,
+    is_data_saved,
     render_download_button,
+    render_pending_step_state,
     render_sidebar_navigation,
+    set_data_status,
     render_title,
     render_top_nav,
 )
@@ -85,8 +88,6 @@ def build_venue_dataframe(venues: list[dict]) -> pd.DataFrame:
                 "名称": venue["name"],
                 "地址": venue["address"],
                 "类型": venue["type"],
-                "容量": venue["capacity"],
-                "需求量(kg)": venue["demand_kg"],
                 "坐标": (
                     f"({float(venue['lng']):.4f}, {float(venue['lat']):.4f})"
                     if venue.get("lng") is not None and venue.get("lat") is not None
@@ -144,6 +145,7 @@ st.markdown(
     """
     <style>
     .glp-venue-card,
+    .st-key-venues-empty-card,
     .st-key-venues-entry-card,
     .st-key-venues-batch-card,
     .st-key-venues-form-card,
@@ -167,31 +169,43 @@ st.markdown(
         font-size: 0.95rem;
         font-weight: 500;
         color: #18220f;
-        margin: 0 0 0.45rem 0;
+        margin: 0 0 0.48rem 0;
     }
     .glp-upload-tip {
-        margin-top: 0.55rem;
+        margin-top: 0.38rem;
+        margin-bottom: 0;
         color: #707070;
         font-size: 0.95rem;
+        line-height: 1.35;
     }
-    .st-key-venues-batch-upload-panel,
-    .st-key-venues-batch-api-panel {
+    .st-key-venues-batch-upload-panel {
         background: rgba(255, 255, 255, 0.24);
         border: 1px solid rgba(255, 255, 255, 0.5);
         border-radius: 22px;
-        padding: 1.2rem 1.2rem 1.1rem;
-        min-height: 240px;
+        padding: 0.95rem 1rem 0.7rem;
+        min-height: auto;
         box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
     }
-    .st-key-venues-batch-upload-panel > div,
-    .st-key-venues-batch-api-panel > div {
-        height: 100%;
+    .st-key-venues-batch-upload-panel > div {
+        height: auto;
     }
     .glp-batch-panel-note {
-        margin-top: 0.65rem;
+        margin-top: 0.4rem;
         color: #4d5f3b;
         font-size: 0.95rem;
-        line-height: 1.7;
+        line-height: 1.5;
+    }
+    .st-key-venues-batch-actions {
+        margin-top: 0.7rem;
+    }
+    .st-key-venues-batch-actions [data-testid="stHorizontalBlock"] {
+        align-items: center;
+        justify-content: center;
+    }
+    .st-key-venues-entry-card [data-testid="stTabs"] button [data-testid="stMarkdownContainer"] p {
+        font-size: 1.16rem !important;
+        font-weight: 650 !important;
+        line-height: 1.2 !important;
     }
     .glp-empty-list {
         min-height: 160px;
@@ -221,31 +235,74 @@ st.markdown(
         margin: 1.5rem auto 0;
         max-width: 400px;
     }
-    div[data-testid="stFileUploader"] > label,
     div[data-testid="stTextInput"] > label,
     div[data-testid="stNumberInput"] > label,
     div[data-testid="stSelectbox"] > label {
         color: #1d2812 !important;
         font-weight: 600 !important;
     }
+    [data-testid="stFileUploader"],
+    [data-testid="stFileUploaderDropzone"] {
+        width: 100% !important;
+    }
+    [data-testid="stFileUploader"] {
+        display: flex !important;
+        justify-content: center !important;
+    }
     div[data-testid="stFileUploaderDropzone"] {
-        background: rgba(255, 255, 255, 0.14) !important;
-        border: 3px dashed #111 !important;
-        border-radius: 18px !important;
-        min-height: 120px !important;
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: center !important;
+        justify-content: center !important;
+        text-align: center !important;
     }
-    div[data-testid="stFileUploaderDropzoneInstructions"] > div:first-child,
-    div[data-testid="stFileUploaderDropzoneInstructions"] > small {
-        display: none !important;
+    [data-testid="stFileUploaderDropzone"] > div {
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: center !important;
+        justify-content: center !important;
+        text-align: center !important;
+        width: 100% !important;
     }
-    div[data-testid="stFileUploaderDropzone"] button {
-        background: #ffffff !important;
-        color: #1b1b1b !important;
-        border: 0 !important;
-        border-radius: 12px !important;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2) !important;
-        font-size: 1rem !important;
-        padding: 0.55rem 1.25rem !important;
+    div[data-testid="stFileUploaderDropzone"] section {
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: center !important;
+        justify-content: center !important;
+        text-align: center !important;
+        width: 100% !important;
+    }
+    div[data-testid="stFileUploaderDropzone"] section > div:first-child {
+        display: flex !important;
+        justify-content: center !important;
+        width: 100% !important;
+    }
+    div[data-testid="stFileUploaderDropzoneInstructions"] {
+        width: 100% !important;
+        display: flex !important;
+        justify-content: center !important;
+        text-align: center !important;
+        align-self: center !important;
+        min-width: 0 !important;
+    }
+    div[data-testid="stFileUploaderDropzoneInstructions"] > div {
+        width: auto !important;
+        min-width: 0 !important;
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: center !important;
+        justify-content: center !important;
+        text-align: center !important;
+    }
+    div[data-testid="stFileUploaderDropzoneInstructions"] span {
+        display: block !important;
+        width: auto !important;
+        text-align: center !important;
+        white-space: normal !important;
+        margin: 0 auto !important;
+    }
+    [data-testid="stBaseButton-secondary"] {
+        margin: 0 auto !important;
     }
     [data-baseweb="input"] input,
     [data-baseweb="base-input"] input,
@@ -308,12 +365,120 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-render_title("场馆录入", "批量导入或逐条添加赛事场馆信息")
+st.markdown(
+    """
+    <style>
+        .st-key-venues-batch-upload-panel [data-testid="stFileUploader"] {
+            width: 100% !important;
+            margin: 0 !important;
+        }
+
+        .st-key-venues-batch-upload-panel [data-testid="stFileUploaderDropzone"] {
+            position: relative !important;
+            width: 100% !important;
+            min-height: 3rem !important;
+            padding: 0 !important;
+            background: #ffffff !important;
+            border: 0 !important;
+            border-radius: 12px !important;
+            box-shadow: 0 5px 13px rgba(0, 0, 0, 0.2) !important;
+            overflow: hidden !important;
+            cursor: pointer !important;
+        }
+
+        .st-key-venues-batch-upload-panel [data-testid="stFileUploaderDropzone"] section {
+            min-height: 3rem !important;
+            padding: 0 !important;
+            background: transparent !important;
+            border: 0 !important;
+            box-shadow: none !important;
+        }
+
+        .st-key-venues-batch-upload-panel [data-testid="stFileUploaderDropzone"] section > div,
+        .st-key-venues-batch-upload-panel [data-testid="stFileUploaderDropzone"] section > div > div {
+            background: transparent !important;
+            border: 0 !important;
+            box-shadow: none !important;
+        }
+
+        .st-key-venues-batch-upload-panel [data-testid="stFileUploaderDropzone"]::before {
+            content: "Upload";
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #111111;
+            font-size: 1rem;
+            font-weight: 500;
+            line-height: 1;
+            background: #ffffff;
+            pointer-events: none;
+            z-index: 2;
+        }
+
+        .st-key-venues-batch-upload-panel [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzoneInstructions"],
+        .st-key-venues-batch-upload-panel [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] small,
+        .st-key-venues-batch-upload-panel [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] svg,
+        .st-key-venues-batch-upload-panel [data-testid="stFileUploader"] [data-testid="stBaseButton-secondary"] {
+            opacity: 0 !important;
+        }
+
+        .st-key-venues-batch-upload-panel [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzoneInstructions"] {
+            height: 0 !important;
+            min-height: 0 !important;
+            margin: 0 !important;
+            overflow: hidden !important;
+        }
+
+        .st-key-venues-batch-upload-panel [data-testid="stFileUploader"] [data-testid="stBaseButton-secondary"] {
+            height: 0 !important;
+            min-height: 0 !important;
+            padding: 0 !important;
+            border: 0 !important;
+            margin: 0 !important;
+        }
+
+        .st-key-venues-batch-upload-panel [data-testid="stFileUploaderDropzone"]:hover,
+        .st-key-venues-batch-upload-panel [data-testid="stFileUploaderDropzone"]:focus-within {
+            background: #ffffff !important;
+            border: 0 !important;
+            box-shadow: 0 5px 13px rgba(0, 0, 0, 0.2) !important;
+        }
+
+        .st-key-venues-batch-upload-panel div[data-testid="stAlert"] {
+            width: fit-content !important;
+            max-width: 100% !important;
+            display: inline-flex !important;
+            margin-top: 0.45rem !important;
+            margin-bottom: 0 !important;
+        }
+
+        .st-key-venues-batch-upload-panel div[data-testid="stAlert"] > div {
+            width: auto !important;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+render_title("场馆录入", "逐条添加或批量导入赛事场馆信息")
+if not is_data_saved("warehouse"):
+    render_pending_step_state(
+        anchor_name="sec-entry",
+        container_key="venues-empty-card",
+        warning_message="尚未完成仓库设置，请先完成上一步。",
+        info_message="当前页面为场馆录入视图，需要先在“仓库设置”页面完成并保存仓库信息后，才能继续录入场馆。",
+        prev_page="pages/1_warehouse.py",
+        next_page="pages/3_materials.py",
+        key_prefix="venues-guard-nav",
+        next_block_message="请先完成并保存仓库设置后，再进入下一步。",
+    )
 
 if "venues" not in st.session_state:
     st.session_state.venues = []
 if "demands" not in st.session_state:
     st.session_state.demands = {}
+set_data_status("venues", "saved" if st.session_state.venues else "empty")
 
 for venue in st.session_state.venues:
     venue["type"] = normalize_venue_type(venue.get("type"))
@@ -324,7 +489,6 @@ detected_name = detected_addr = detected_type = detected_cap = detected_demand =
 
 anchor("sec-entry")
 with st.container(key="venues-entry-card"):
-    st.markdown('<div class="glp-venue-card-title">场馆录入</div>', unsafe_allow_html=True)
     tab_online, tab_batch = st.tabs(["在线添加", "文件批量导入"])
 
     with tab_online:
@@ -345,16 +509,9 @@ with st.container(key="venues-entry-card"):
 
             col_m1, col_m2 = st.columns(2)
             with col_m1:
-                manual_lng = st.number_input("手动输入经度（可选）", value=113.0, format="%.6f")
+                manual_lng = st.number_input("手动输入经度（可选）", value=None, format="%.6f", placeholder="如：113.123456")
             with col_m2:
-                manual_lat = st.number_input("手动输入纬度（可选）", value=23.0, format="%.6f")
-
-            api_key_single = st.text_input(
-                "高德API密钥",
-                value=st.session_state.get("api_key_amap", ""),
-                type="password",
-                placeholder="不填则只保存场馆信息",
-            )
+                manual_lat = st.number_input("手动输入纬度（可选）", value=None, format="%.6f", placeholder="如：23.123456")
             submitted = st.form_submit_button("添加场馆", type="primary", width='stretch')
 
         if submitted:
@@ -363,12 +520,15 @@ with st.container(key="venues-entry-card"):
             else:
                 lng = lat = None
                 geocoded = False
-                if api_key_single:
-                    st.session_state.api_key_amap = api_key_single
-                if 22.0 <= manual_lat <= 25.0 and 112.0 <= manual_lng <= 115.0:
+                if (
+                    manual_lat is not None
+                    and manual_lng is not None
+                    and 22.0 <= manual_lat <= 25.0
+                    and 112.0 <= manual_lng <= 115.0
+                ):
                     lng, lat, geocoded = float(manual_lng), float(manual_lat), True
-                elif api_key_single:
-                    result = geocode(address, api_key_single)
+                else:
+                    result = geocode(address)
                     if result:
                         lng, lat, geocoded = float(result[0]), float(result[1]), True
                     else:
@@ -387,61 +547,40 @@ with st.container(key="venues-entry-card"):
                 }
                 st.session_state.venues.append(venue)
                 st.session_state.demands[name.strip()] = float(demand_kg)
+                set_data_status("venues", "saved")
                 st.success(f"场馆「{name.strip()}」已添加！")
 
     with tab_batch:
-        left, right = st.columns([1, 1], gap="large")
+        with st.container(key="venues-batch-upload-panel"):
+            st.markdown('<div class="glp-field-label">上传场馆数据文件</div>', unsafe_allow_html=True)
+            uploaded_file = st.file_uploader(
+                "上传场馆数据文件",
+                type=["csv", "xlsx", "xls", "txt", "json"],
+                label_visibility="collapsed",
+            )
+            st.markdown('<div class="glp-upload-tip" style="margin-top: 10px; margin-bottom: 15px;">支持格式：CSV/Excel/TXT/JSON</div>', unsafe_allow_html=True)
+            
+            if uploaded_file is not None:
+                uploaded_df, uploaded_error = read_venue_file(uploaded_file)
+                if uploaded_error:
+                    st.error(uploaded_error)
+                elif uploaded_df is not None and not uploaded_df.empty:
+                    detected_name, detected_addr, detected_type, detected_cap, detected_demand = detect_columns(uploaded_df)
+                    st.success("文件读取成功，可开始批量处理。")
+                else:
+                    st.warning("文件中没有可读取的数据")
 
-        with left:
-            with st.container(key="venues-batch-upload-panel"):
-                st.markdown('<div class="glp-field-label">上传场馆数据文件</div>', unsafe_allow_html=True)
-                uploaded_file = st.file_uploader(
-                    "上传场馆数据文件",
-                    type=["csv", "xlsx", "xls", "txt", "json"],
-                    label_visibility="collapsed",
-                )
-                st.markdown('<div class="glp-upload-tip">支持格式：CSV/Excel/TXT/JSON</div>', unsafe_allow_html=True)
-
-                if uploaded_file is not None:
-                    uploaded_df, uploaded_error = read_venue_file(uploaded_file)
-                    if uploaded_error:
-                        st.error(uploaded_error)
-                    elif uploaded_df is not None and not uploaded_df.empty:
-                        detected_name, detected_addr, detected_type, detected_cap, detected_demand = detect_columns(uploaded_df)
-                        st.success("文件读取成功，可开始批量处理。")
-                        st.markdown(
-                            '<div class="glp-batch-panel-note">系统已完成文件解析，并自动识别场馆名称、地址等关键列。</div>',
-                            unsafe_allow_html=True,
-                        )
-                    else:
-                        st.warning("文件中没有可读取的数据")
-
-        with right:
-            with st.container(key="venues-batch-api-panel"):
-                st.markdown('<div class="glp-field-label">高德API密钥</div>', unsafe_allow_html=True)
-                api_key_batch = st.text_input(
-                    "高德API密钥",
-                    value=st.session_state.get("api_key_amap", ""),
-                    type="password",
-                    key="venues_batch_api_key",
-                    label_visibility="collapsed",
-                )
-                st.markdown(
-                    '<div class="glp-batch-panel-note">用于批量地理编码场馆地址，未填写时无法执行批量定位。</div>',
-                    unsafe_allow_html=True,
-                )
-                if api_key_batch:
-                    st.session_state.api_key_amap = api_key_batch
-
-        b1, b2 = st.columns(2)
-        with b1:
-            process_btn = st.button("开始批量处理", type="primary", width='stretch')
-        with b2:
-            clear_all = st.button("清空场馆", width='stretch')
+        with st.container(key="venues-batch-actions"):
+            _, b1, b2, _ = st.columns([1.1, 1, 1, 1.1], gap="medium")
+            with b1:
+                process_btn = st.button("开始批量处理", type="primary", width='stretch')
+            with b2:
+                clear_all = st.button("清空场馆", width='stretch')
 
         if clear_all:
             st.session_state.venues = []
             st.session_state.demands = {}
+            set_data_status("venues", "empty")
             st.success("已清空场馆数据")
 
         if process_btn:
@@ -449,8 +588,6 @@ with st.container(key="venues-entry-card"):
                 st.error("请先上传文件")
             elif uploaded_df is None or uploaded_df.empty:
                 st.error("上传文件暂无可读取数据")
-            elif not api_key_batch.strip():
-                st.error("请输入高德API密钥")
             elif not detected_name or not detected_addr:
                 st.error("未能自动识别场馆名称列和地址列，请检查表头命名")
             else:
@@ -483,7 +620,7 @@ with st.container(key="venues-entry-card"):
                     lng = lat = None
                     geocoded = False
 
-                    result = geocode(venue_address, api_key_batch.strip())
+                    result = geocode(venue_address)
                     if result:
                         lng, lat = float(result[0]), float(result[1])
                         geocoded = True
@@ -507,6 +644,7 @@ with st.container(key="venues-entry-card"):
                 progress_bar.empty()
                 status_text.empty()
                 geo_ok = sum(1 for venue in st.session_state.venues if venue.get("geocoded"))
+                set_data_status("venues", "saved" if st.session_state.venues else "empty")
                 st.success(f"批量导入完成！成功定位 {geo_ok}/{len(st.session_state.venues)} 个场馆")
 
 anchor("sec-list")
@@ -514,21 +652,20 @@ with st.container(key="venues-list-card"):
     st.markdown('<div class="glp-venue-card-title">场馆列表</div>', unsafe_allow_html=True)
     if st.session_state.venues:
         df_venues = build_venue_dataframe(st.session_state.venues)
-        col_l1, col_l2 = st.columns([3, 1])
+        col_l1, col_l2 = st.columns([3.4, 0.8], gap="medium")
         with col_l1:
             st.dataframe(df_venues, hide_index=True, width='stretch', height=300)
         with col_l2:
-            total_demand = sum(float(venue.get("demand_kg", 0) or 0) for venue in st.session_state.venues)
             geo_count = sum(1 for venue in st.session_state.venues if venue.get("geocoded"))
             st.metric("场馆总数", len(st.session_state.venues))
             st.metric("已定位", geo_count)
-            st.metric("总需求量", f"{total_demand:,.0f} kg")
 
         venue_names = [venue["name"] for venue in st.session_state.venues]
         selected_name = st.selectbox("选择要删除的场馆", [""] + venue_names)
         if selected_name and st.button("确认删除"):
             st.session_state.venues = [venue for venue in st.session_state.venues if venue["name"] != selected_name]
             st.session_state.demands.pop(selected_name, None)
+            set_data_status("venues", "saved" if st.session_state.venues else "empty")
             st.success(f"已删除场馆：{selected_name}")
             st.rerun()
     else:
@@ -600,4 +737,10 @@ with st.container(key="venues-map-card"):
         st.button("导出场馆CSV", disabled=True, width='stretch')
     st.markdown("</div>", unsafe_allow_html=True)
 
-render_page_nav("pages/1_warehouse.py", "pages/3_materials.py", key_prefix="venues-nav")
+render_page_nav(
+    "pages/1_warehouse.py",
+    "pages/3_materials.py",
+    key_prefix="venues-nav",
+    can_go_next=is_data_saved("venues"),
+    next_block_message="请先录入并保存至少一个场馆后再进入下一步。",
+)

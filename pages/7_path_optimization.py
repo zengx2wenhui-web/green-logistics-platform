@@ -1,13 +1,13 @@
 """路径优化页面。"""
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime
 import sys
 from pathlib import Path
 
 import folium
 import pandas as pd
-import plotly.express as px
 import streamlit as st
 from streamlit_folium import st_folium
 
@@ -16,15 +16,19 @@ if str(_APP_ROOT) not in sys.path:
     sys.path.insert(0, str(_APP_ROOT))
 
 from pages._bottom_nav import render_page_nav
+from pages._route_analysis_shared import add_route_map_legend
 from pages._ui_shared import (
     anchor,
+    get_data_status,
     inject_base_style,
     inject_sidebar_navigation_label,
+    render_pending_step_state,
     render_title,
     render_sidebar_navigation,
     render_top_nav,
 )
-from utils.carbon_calc import compute_route_emission
+from utils.amap_api import DEFAULT_AMAP_API_KEY
+from utils.carbon_calc import calc_emission, compute_route_emission
 from utils.distance_matrix import build_distance_matrix_from_coords
 from utils.file_reader import normalize_name
 from utils.route_display import (
@@ -33,6 +37,12 @@ from utils.route_display import (
     get_ordered_route_nodes,
     get_ordered_route_segments,
     is_warehouse_depot_segment,
+)
+from utils.vehicle_environment import (
+    DEFAULT_H2_SOURCE,
+    DEFAULT_SEASON,
+    format_vehicle_environment_summary,
+    resolve_vehicle_environment_config,
 )
 from utils.vehicle_lib import get_vehicle_params
 
@@ -386,6 +396,215 @@ def finalize_route_result(
     return route_info
 
 
+def clone_route_result_as_diesel(
+    route_result: dict,
+    *,
+    season: str,
+    h2_source: str,
+) -> dict:
+    cloned_route = deepcopy(route_result)
+    diesel_display_name = display_vehicle_name("diesel")
+    cloned_route["vehicle_type_id"] = "diesel"
+    cloned_route["vehicle_type"] = diesel_display_name
+    cloned_route["vehicle_display_name"] = diesel_display_name
+
+    updated_segments: list[dict[str, object]] = []
+    total_carbon_kg = 0.0
+    trunk_carbon_kg = 0.0
+    for segment in cloned_route.get("segments", []) or []:
+        updated_segment = dict(segment)
+        distance_km = float(updated_segment.get("distance_km", 0) or 0)
+        load_kg = float(updated_segment.get("load_kg", 0) or 0)
+        carbon_kg = round(calc_emission(distance_km, load_kg, "diesel", season, h2_source), 4)
+        updated_segment["carbon_kg"] = carbon_kg
+        updated_segments.append(updated_segment)
+        total_carbon_kg += carbon_kg
+        if str(updated_segment.get("segment_type") or "") == "trunk_transfer":
+            trunk_carbon_kg += carbon_kg
+
+    cloned_route["segments"] = updated_segments
+    cloned_route["trunk_carbon_kg"] = round(trunk_carbon_kg, 4)
+    cloned_route["delivery_carbon_kg"] = round(max(total_carbon_kg - trunk_carbon_kg, 0.0), 4)
+    cloned_route["total_carbon_kg"] = round(total_carbon_kg, 4)
+    return cloned_route
+
+
+def build_baseline_direct_route_results(
+    *,
+    nodes: list[dict],
+    demands: dict,
+    distance_matrix: list[list[float]],
+    season: str,
+    h2_source: str,
+) -> list[dict]:
+    if not nodes:
+        return []
+
+    warehouse_route_node = build_route_node_from_source(nodes[0], "warehouse")
+    diesel_display_name = display_vehicle_name("diesel")
+    route_results: list[dict] = []
+
+    for venue_idx in range(1, len(nodes)):
+        venue_node = nodes[venue_idx]
+        venue_name = str(venue_node.get("name") or f"venue_{venue_idx}")
+        detail, total_venue_demand = build_load_detail(venue_name, get_venue_demand(venue_name, demands))
+        venue_route_node = build_route_node_from_source(venue_node, "venue")
+        route_info = {
+            "vehicle_name": f"直发车{venue_idx}",
+            "vehicle_type_id": "diesel",
+            "vehicle_type": diesel_display_name,
+            "vehicle_display_name": diesel_display_name,
+            "vehicle_capacity_kg": 0,
+            "cold_start_g": (get_vehicle_params("diesel") or {}).get("cold_start_g", 0),
+            "route": [0, venue_idx, 0],
+            "visits": [venue_name],
+            "visited_venue_names": [venue_name],
+            "load_details": [detail],
+            "route_coords": [],
+            "route_path_names": [],
+            "ordered_route_nodes": [],
+            "segment_labels": [],
+            "segment_types": [],
+            "route_scope": "baseline_direct",
+            "total_load_kg": total_venue_demand,
+            "total_distance_km": 0.0,
+            "total_carbon_kg": 0.0,
+            "delivery_distance_km": 0.0,
+            "delivery_carbon_kg": 0.0,
+            "trunk_distance_km": 0.0,
+            "trunk_carbon_kg": 0.0,
+            "segments": [],
+        }
+        ordered_route_nodes = [
+            dict(warehouse_route_node),
+            dict(venue_route_node),
+            dict(warehouse_route_node),
+        ]
+        segment_distances = [
+            float(distance_matrix[0][venue_idx] or 0),
+            float(distance_matrix[venue_idx][0] or 0),
+        ]
+        segment_demands = [float(total_venue_demand or 0)]
+        finalize_route_result(
+            route_info=route_info,
+            ordered_route_nodes=ordered_route_nodes,
+            segment_distances=segment_distances,
+            segment_demands=segment_demands,
+            vehicle_type_id="diesel",
+            season=season,
+            h2_source=h2_source,
+        )
+        route_results.append(route_info)
+
+    return route_results
+
+
+def build_comparison_scenario(
+    *,
+    scenario_id: str,
+    label: str,
+    description: str,
+    route_results: list[dict],
+    depot_results: list[dict],
+    baseline_emission: float,
+    vehicle_type_id: str,
+    vehicle_display_name: str,
+) -> dict[str, object]:
+    total_emission = round(sum(float(route.get("total_carbon_kg", 0) or 0) for route in route_results), 4)
+    total_distance_km = round(sum(float(route.get("total_distance_km", 0) or 0) for route in route_results), 2)
+    terminal_distance_km = round(
+        sum(float(route.get("delivery_distance_km", route.get("total_distance_km", 0)) or 0) for route in route_results),
+        2,
+    )
+    trunk_distance_km = round(sum(float(route.get("trunk_distance_km", 0) or 0) for route in route_results), 2)
+    trunk_emission = round(sum(float(route.get("trunk_carbon_kg", 0) or 0) for route in route_results), 4)
+    terminal_emission = round(max(total_emission - trunk_emission, 0.0), 4)
+    reduction_vs_baseline = round(max(baseline_emission - total_emission, 0.0), 4)
+    reduction_vs_baseline_pct = round(
+        (reduction_vs_baseline / baseline_emission * 100) if baseline_emission > 0 else 0.0,
+        2,
+    )
+    return {
+        "id": scenario_id,
+        "label": label,
+        "description": description,
+        "route_results": route_results,
+        "depot_results": depot_results,
+        "total_emission": total_emission,
+        "total_distance_km": total_distance_km,
+        "terminal_distance_km": terminal_distance_km,
+        "trunk_distance_km": trunk_distance_km,
+        "terminal_emission": terminal_emission,
+        "trunk_emission": trunk_emission,
+        "num_vehicles_used": len(route_results),
+        "vehicle_type_id": vehicle_type_id,
+        "vehicle_display_name": vehicle_display_name,
+        "reduction_vs_baseline": reduction_vs_baseline,
+        "reduction_vs_baseline_pct": reduction_vs_baseline_pct,
+    }
+
+
+def build_comparison_scenarios(
+    *,
+    nodes: list[dict],
+    demands: dict,
+    distance_matrix: list[list[float]],
+    optimized_route_results: list[dict],
+    optimized_depot_results: list[dict],
+    season: str,
+    h2_source: str,
+    optimized_vehicle_type_id: str,
+    optimized_vehicle_display_name: str,
+) -> list[dict[str, object]]:
+    baseline_route_results = build_baseline_direct_route_results(
+        nodes=nodes,
+        demands=demands,
+        distance_matrix=distance_matrix,
+        season=season,
+        h2_source=h2_source,
+    )
+    baseline_emission = round(
+        sum(float(route.get("total_carbon_kg", 0) or 0) for route in baseline_route_results),
+        4,
+    )
+    diesel_route_results = [
+        clone_route_result_as_diesel(route_result, season=season, h2_source=h2_source)
+        for route_result in optimized_route_results
+    ]
+    return [
+        build_comparison_scenario(
+            scenario_id="baseline_direct",
+            label="基线方案（总仓直发）",
+            description="总仓直接配送至各场馆，作为基准碳排放方案。",
+            route_results=baseline_route_results,
+            depot_results=[],
+            baseline_emission=baseline_emission,
+            vehicle_type_id="diesel",
+            vehicle_display_name=display_vehicle_name("diesel"),
+        ),
+        build_comparison_scenario(
+            scenario_id="diesel_same_routes",
+            label="全柴油方案（同路线）",
+            description="复用优化后的线路结构，但统一按柴油车型核算碳排放。",
+            route_results=diesel_route_results,
+            depot_results=deepcopy(optimized_depot_results),
+            baseline_emission=baseline_emission,
+            vehicle_type_id="diesel",
+            vehicle_display_name=display_vehicle_name("diesel"),
+        ),
+        build_comparison_scenario(
+            scenario_id="optimized_current",
+            label="优化方案",
+            description="采用当前优化后的中转枢纽与车型配置方案。",
+            route_results=deepcopy(optimized_route_results),
+            depot_results=deepcopy(optimized_depot_results),
+            baseline_emission=baseline_emission,
+            vehicle_type_id=optimized_vehicle_type_id,
+            vehicle_display_name=optimized_vehicle_display_name,
+        ),
+    ]
+
+
 def infer_depot_region(depot_name: str) -> tuple[str, str]:
     name = str(depot_name or "")
     region_map = {
@@ -468,6 +687,15 @@ def build_fleet_capacity_snapshot(vehicle_list: list[dict]) -> dict[str, object]
         "max_cap_kg": max_cap_kg,
         "total_cap_kg": total_cap_kg,
     }
+
+
+def get_saved_vehicle_environment_config() -> dict[str, object]:
+    return resolve_vehicle_environment_config(
+        st.session_state.get("vehicles", []),
+        st.session_state.get("vehicle_environment_config"),
+        fallback_season=st.session_state.get("global_season", DEFAULT_SEASON),
+        fallback_h2_source=st.session_state.get("global_h2_source", DEFAULT_H2_SOURCE),
+    )
 
 
 def solve_multi_depot_routes(
@@ -695,8 +923,20 @@ warehouse = st.session_state.get("warehouse", {})
 venues = st.session_state.get("venues", [])
 demands = st.session_state.get("demands", {})
 vehicles = st.session_state.get("vehicles", [])
-g_season = st.session_state.get("global_season", "夏")
-g_h2_source = st.session_state.get("global_h2_source", "工业副产氢")
+if "vehicle_environment_config" not in st.session_state and vehicles:
+    st.session_state.vehicle_environment_config = resolve_vehicle_environment_config(
+        vehicles,
+        None,
+        fallback_season=st.session_state.get("global_season", DEFAULT_SEASON),
+        fallback_h2_source=st.session_state.get("global_h2_source", DEFAULT_H2_SOURCE),
+    )
+saved_vehicle_environment_config = get_saved_vehicle_environment_config()
+if vehicles:
+    st.session_state.vehicle_environment_config = saved_vehicle_environment_config
+g_season = saved_vehicle_environment_config.get("season")
+g_h2_source = saved_vehicle_environment_config.get("h2_source")
+environment_summary = format_vehicle_environment_summary(saved_vehicle_environment_config)
+vehicle_status = get_data_status("vehicles")
 
 try:
     from utils.fsmvrp_ortools import solve_fsmvrp_ortools
@@ -713,6 +953,24 @@ if "path_opt_run_requested" not in st.session_state:
     st.session_state.path_opt_run_requested = False
 if "path_opt_error_message" not in st.session_state:
     st.session_state.path_opt_error_message = ""
+
+if vehicle_status != "saved":
+    if vehicle_status == "dirty":
+        warning_message = "检测到车辆或环境参数存在未保存改动。"
+        info_message = "路径优化只会基于已保存的车辆与环境快照执行，请先返回“车辆配置”页面保存后再继续。"
+    else:
+        warning_message = "尚未完成车辆与环境配置，请先完成上一步。"
+        info_message = "当前页面需要使用已保存的车辆与环境快照，只有完成“车辆配置”页面并点击保存后，才能继续执行路径优化。"
+    render_pending_step_state(
+        anchor_name="sec-check",
+        container_key="path-opt-empty-card",
+        warning_message=warning_message,
+        info_message=info_message,
+        prev_page="pages/4_vehicles.py",
+        next_page="pages/6_carbon_overview.py",
+        key_prefix="path-opt-guard-nav",
+        next_block_message="请先完成并保存车辆与环境配置后，再继续执行路径优化。",
+    )
 
 fleet_snapshot = build_fleet_capacity_snapshot(vehicles)
 total_fleet_capacity_kg = int(fleet_snapshot["total_cap_kg"] or 0)
@@ -733,7 +991,7 @@ with st.container(key="path-opt-check-card"):
     with col4:
         st.metric("车队上限", f"{total_vehicles} 辆")
     with col5:
-        st.metric("当前环境", f"{g_season} | {g_h2_source}")
+        st.metric("当前环境", environment_summary)
 
     missing = []
     if warehouse.get("lng") is None or warehouse.get("lat") is None:
@@ -752,7 +1010,7 @@ with st.container(key="path-opt-check-card"):
 
 with st.container(key="path-opt-summary-card"):
     st.markdown("### 已满足执行条件")
-    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+    col_s1, col_s2, col_s3, col_s4 = st.columns([5, 3, 6, 2])
     with col_s1:
         warehouse_address = warehouse.get("address", "未设置")
         st.metric("总仓地址", warehouse_address[:15] + "..." if len(warehouse_address) > 15 else warehouse_address)
@@ -766,26 +1024,22 @@ with st.container(key="path-opt-summary-card"):
         )
         st.metric("车队配置", vehicle_summary[:24] + "..." if len(vehicle_summary) > 24 else vehicle_summary)
     with col_s4:
-        st.metric("环境参数", f"{g_season} / {g_h2_source}")
+        st.metric("环境参数", environment_summary)
 
     st.caption(f"当前车队满载总运力：{total_fleet_capacity_kg:,.0f} kg")
 
 anchor("sec-exec")
 with st.container(key="path-opt-exec-card"):
     st.markdown("### 执行优化计算")
-    exec_col1, exec_col2 = st.columns(2)
-    with exec_col1:
-        api_key = st.text_input(
-            "高德 API 密钥（可选，用于补全中转枢纽省市）",
-            value=st.session_state.get("api_key_amap", ""),
-            type="password",
-            help="不填则中转枢纽仅展示候选仓名称与坐标；填入后可尝试补全真实省市信息。",
-            key="path_opt_api_key_input",
-        )
-        if api_key:
-            st.session_state.api_key_amap = api_key
-    with exec_col2:
-        time_limit = st.slider("OR-Tools 求解时间上限（秒）", 5, 120, 30, help="时间越长，求解质量通常越高。")
+    api_key = str(st.session_state.get("api_key_amap") or DEFAULT_AMAP_API_KEY)
+    st.session_state.api_key_amap = api_key
+    time_limit = st.slider(
+        "OR-Tools 求解时间上限（秒）",
+        5,
+        120,
+        30,
+        help="时间越长，求解质量通常越高，且会自动复用后台配置的地理补全能力。",
+    )
 
     if solver_import_error:
         st.warning(f"OR-Tools solver is unavailable in the current environment: {solver_import_error}")
@@ -1081,25 +1335,40 @@ with st.container(key="path-opt-exec-card"):
             progress_bar.progress(0.85)
 
             status_text.text("Step G: 汇总结果")
-            baseline_ef = 0.060
-            baseline_distance = sum(distance_matrix[0][i] + distance_matrix[i][0] for i in range(1, len(nodes)))
-            baseline_carbon = sum(node_demands) / 1000 * baseline_distance * baseline_ef
             terminal_distance_km = sum(route.get("delivery_distance_km", route.get("total_distance_km", 0)) for route in route_results)
             terminal_carbon = sum(route.get("delivery_carbon_kg", route.get("total_carbon_kg", 0)) for route in route_results)
             trunk_distance_km = sum(route.get("trunk_distance_km", 0) for route in route_results)
             trunk_carbon = sum(route.get("trunk_carbon_kg", 0) for route in route_results)
             optimized_carbon = sum(route.get("total_carbon_kg", 0) for route in route_results)
-            reduction_pct = ((baseline_carbon - optimized_carbon) / baseline_carbon * 100) if baseline_carbon > 0 else 0.0
 
             used_vehicle_type_ids = sorted({route["vehicle_type_id"] for route in route_results})
             result_vehicle_type_id = used_vehicle_type_ids[0] if len(used_vehicle_type_ids) == 1 else "mixed"
             result_vehicle_display_name = display_vehicle_name(result_vehicle_type_id)
+            comparison_scenarios = build_comparison_scenarios(
+                nodes=nodes,
+                demands=demands,
+                distance_matrix=distance_matrix,
+                optimized_route_results=route_results,
+                optimized_depot_results=depot_results,
+                season=g_season,
+                h2_source=g_h2_source,
+                optimized_vehicle_type_id=result_vehicle_type_id,
+                optimized_vehicle_display_name=result_vehicle_display_name,
+            )
+            baseline_scenario = next(
+                (scenario for scenario in comparison_scenarios if scenario.get("id") == "baseline_direct"),
+                {},
+            )
+            baseline_carbon = float(baseline_scenario.get("total_emission", 0) or 0)
+            baseline_distance = float(baseline_scenario.get("total_distance_km", 0) or 0)
+            reduction_pct = ((baseline_carbon - optimized_carbon) / baseline_carbon * 100) if baseline_carbon > 0 else 0.0
 
             optimization_results = {
                 "route_results": route_results,
                 "trunk_routes": trunk_routes,
                 "total_emission": optimized_carbon,
                 "baseline_emission": baseline_carbon,
+                "baseline_distance_km": baseline_distance,
                 "reduction_percent": reduction_pct,
                 "total_distance_km": sum(route.get("total_distance_km", 0) for route in route_results),
                 "terminal_distance_km": terminal_distance_km,
@@ -1119,6 +1388,8 @@ with st.container(key="path-opt-exec-card"):
                 "routes": routes,
                 "demands": demands,
                 "depot_results": depot_results,
+                "comparison_scenarios": comparison_scenarios,
+                "environment_context": dict(saved_vehicle_environment_config),
                 "season": g_season,
                 "h2_source": g_h2_source,
                 "timestamp": datetime.now().isoformat(),
@@ -1165,7 +1436,7 @@ if results:
             st.subheader("中转仓分析结果")
             st.dataframe(pd.DataFrame(depot_results_list), width="stretch", hide_index=True)
 
-        tab_map, tab_table, tab_carbon = st.tabs(["路线地图", "车辆调度详情", "碳排放对比"])
+        tab_map, tab_table = st.tabs(["路线地图", "车辆调度详情"])
 
         with tab_map:
             st.subheader("物流路线地图")
@@ -1243,45 +1514,7 @@ if results:
                             ),
                         ).add_to(m)
 
-                legend_html = """
-                    <div style="position: fixed; bottom: 20px; left: 20px; z-index: 1000;
-                background: rgba(255, 255, 255, 0.94); padding: 8px 12px; border-radius: 6px;
-                border: 1px solid #ccc; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-                min-width: 160px; font-family: sans-serif;">
-                
-                    <div style="margin-bottom: 8px; font-size: 13px; font-weight: bold; color: #000; border-bottom: 1px solid #eee; padding-bottom: 4px;">路线图例</div>
-                    
-                    <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
-                        <svg style="width: 14px; height: 14px; filter: drop-shadow(0px 1px 2px rgba(0,0,0,0.4));" viewBox="0 0 24 24">
-                            <path fill="#e11d48" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
-                        </svg>
-                        <span style="font-size: 12px; color: #333;">总仓节点</span>
-                    </div>
-
-                    <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
-                        <svg style="width: 13px; height: 13px;" viewBox="0 0 24 24">
-                            <path fill="#ef4444" d="M12 3L2 12h3v8h14v-8h3L12 3z"/>
-                        </svg>
-                        <span style="font-size: 12px; color: #333;">中转仓节点</span>
-                    </div>
-
-                    <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
-                        <span style="width: 10px; height: 10px; background: #ef4444; border-radius: 50%; display: inline-block;"></span>
-                        <span style="font-size: 12px; color: #333;">场馆节点</span>
-                    </div>
-
-                    <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
-                        <span style="width: 24px; height: 0; border-top: 2.5px solid #000; display: inline-block;"></span>
-                        <span style="font-size: 12px; color: #333;">配送主路线段</span>
-                    </div>
-
-                    <div style="display: flex; align-items: center; gap: 8px; margin: 4px 0;">
-                        <span style="width: 24px; height: 0; border-top: 2px dashed #000; display: inline-block;"></span>
-                        <span style="font-size: 12px; color: #333;">总仓与中转仓补给段</span>
-                    </div>
-                </div>
-                """
-                m.get_root().html.add_child(folium.Element(legend_html))
+                add_route_map_legend(m)
 
                 st_folium(m, width="100%", height=500)
             else:
@@ -1323,8 +1556,9 @@ if results:
                     col1, col2, col3 = st.columns(3)
                     with col1:
                         vehicle_capacity_kg = route_result.get("vehicle_capacity_kg", 0)
-                        utilization = (route_result.get("total_load_kg", 0) / vehicle_capacity_kg * 100) if vehicle_capacity_kg else 0
-                        st.metric("总装载量", f"{route_result.get('total_load_kg', 0):.1f} kg", delta=f"装载率 {utilization:.1f}%")
+                        utilization = (route_result.get("total_load_kg", 0) / vehicle_capacity_kg * 100) if vehicle_capacity_kg else None
+                        utilization_text = f"装载率 {utilization:.1f}%" if utilization is not None else "--"
+                        st.metric("总装载量", f"{route_result.get('total_load_kg', 0):.1f} kg", delta=utilization_text)
                     with col2:
                         st.metric("总距离", f"{route_result.get('total_distance_km', 0):.2f} km")
                     with col3:
@@ -1345,41 +1579,6 @@ if results:
             )
             st.subheader("调度汇总")
             st.dataframe(summary_df, hide_index=True, width="stretch")
-
-        with tab_carbon:
-            st.subheader("碳排放对比")
-            reduction = results.get("baseline_emission", 0) - results.get("total_emission", 0)
-            col_c1, col_c2, col_c3 = st.columns(3)
-            with col_c1:
-                st.metric("基线碳排放", f"{results.get('baseline_emission', 0):.2f} kg CO2")
-            with col_c2:
-                st.metric("优化后碳排", f"{results.get('total_emission', 0):.2f} kg CO2")
-            with col_c3:
-                st.metric("减排量", f"{reduction:.2f} kg CO2", delta=f"-{results.get('reduction_percent', 0):.1f}%")
-
-            df_carbon = pd.DataFrame(
-                {
-                    "方案": ["基线方案", "当前优化方案"],
-                    "碳排放(kg CO2)": [results.get("baseline_emission", 0), results.get("total_emission", 0)],
-                }
-            )
-            fig_bar = px.bar(
-                df_carbon,
-                x="方案",
-                y="碳排放(kg CO2)",
-                color="方案",
-                text_auto=True,
-                title="碳排放对比",
-            )
-            fig_bar.update_layout(
-                showlegend=False,
-                paper_bgcolor="rgba(0, 0, 0, 0)",
-                plot_bgcolor="rgba(255, 255, 255, 0.65)",
-            )
-            st.plotly_chart(fig_bar, width="stretch")
-
-            tree_equivalent = reduction / 21.7 if reduction > 0 else 0
-            st.info(f"本次优化约等效于每年新增 **{tree_equivalent:.1f} 棵树** 的碳汇能力。")
 
 else:
     anchor("sec-results")

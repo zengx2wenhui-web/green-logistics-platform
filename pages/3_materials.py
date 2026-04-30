@@ -19,8 +19,11 @@ from pages._ui_shared import (
     anchor,
     inject_base_style,
     inject_sidebar_navigation_label,
+    is_data_saved,
     render_download_button,
+    render_pending_step_state,
     render_sidebar_navigation,
+    set_data_status,
     render_title,
     render_top_nav,
 )
@@ -988,6 +991,7 @@ def sync_from_df(df: pd.DataFrame, display_df: pd.DataFrame | None = None) -> No
     st.session_state.demands = demands_norm
     st.session_state.material_demands = material_demands
     st.session_state.material_columns = base_names
+    set_data_status("materials", "saved" if demands_norm else "empty")
 
 
 def build_online_df(venue_names: list[str]) -> pd.DataFrame:
@@ -1148,6 +1152,7 @@ render_sidebar_navigation()
 init_state()
 
 venue_names = [venue["name"] for venue in st.session_state.get("venues", [])]
+set_data_status("materials", "saved" if st.session_state.get("demands") else "empty")
 render_top_nav(
     tabs=[("在线填写", "sec-online"), ("上传文件", "sec-upload")],
     active_idx=0 if not venue_names else 1,
@@ -1157,6 +1162,7 @@ st.markdown(
     """
     <style>
     .glp-venue-card,
+    .st-key-materials-empty-card,
     .st-key-materials-upload-card,
     .st-key-materials-online-card {
         background: linear-gradient(135deg, rgba(223, 239, 188, 0.94) 0%, rgba(214, 234, 174, 0.92) 100%);
@@ -1182,15 +1188,6 @@ st.markdown(
         font-size: 1.3rem;
         margin-top: 3.6rem;
         box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
-    }
-    .glp-info-panel {
-        background: #d8e4f4;
-        color: #6b92bf;
-        border-radius: 20px;
-        padding: 1.45rem 1.65rem;
-        font-size: 1.05rem;
-        line-height: 1.95;
-        margin-bottom: 1rem;
     }
     .glp-upload-note {
         color: #707070;
@@ -1221,33 +1218,73 @@ st.markdown(
         font-size: 0.95rem;
         margin: 0 0 0.35rem 0;
     }
-    div[data-testid="stFileUploader"] > label,
     div[data-testid="stTextInput"] > label,
     div[data-testid="stNumberInput"] > label {
         color: #1d2812 !important;
         font-weight: 600 !important;
     }
+    [data-testid="stFileUploader"],
+    [data-testid="stFileUploaderDropzone"] {
+        width: 100% !important;
+    }
+    [data-testid="stFileUploader"] {
+        display: flex !important;
+        justify-content: center !important;
+    }
     div[data-testid="stFileUploaderDropzone"] {
-        background: rgba(255, 255, 255, 0.08) !important;
-        border: 4px dashed #111111 !important;
-        border-radius: 18px !important;
-        min-height: 118px !important;
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: center !important;
+        justify-content: center !important;
+        text-align: center !important;
+    }
+    [data-testid="stFileUploaderDropzone"] > div {
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: center !important;
+        justify-content: center !important;
+        text-align: center !important;
+        width: 100% !important;
     }
     div[data-testid="stFileUploaderDropzone"] section {
-        padding: 1rem !important;
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: center !important;
+        justify-content: center !important;
+        text-align: center !important;
+        width: 100% !important;
     }
-    div[data-testid="stFileUploaderDropzoneInstructions"] > div:first-child,
-    div[data-testid="stFileUploaderDropzoneInstructions"] > small {
-        display: none !important;
+    div[data-testid="stFileUploaderDropzone"] section > div:first-child {
+        display: flex !important;
+        justify-content: center !important;
+        width: 100% !important;
     }
-    div[data-testid="stFileUploaderDropzone"] button {
-        background: #ffffff !important;
-        color: #111111 !important;
-        border: 0 !important;
-        border-radius: 12px !important;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2) !important;
-        font-size: 1rem !important;
-        padding: 0.55rem 1.3rem !important;
+    div[data-testid="stFileUploaderDropzoneInstructions"] {
+        width: 100% !important;
+        display: flex !important;
+        justify-content: center !important;
+        text-align: center !important;
+        align-self: center !important;
+        min-width: 0 !important;
+    }
+    div[data-testid="stFileUploaderDropzoneInstructions"] > div {
+        width: auto !important;
+        min-width: 0 !important;
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: center !important;
+        justify-content: center !important;
+        text-align: center !important;
+    }
+    div[data-testid="stFileUploaderDropzoneInstructions"] span {
+        display: block !important;
+        width: auto !important;
+        text-align: center !important;
+        white-space: normal !important;
+        margin: 0 auto !important;
+    }
+    [data-testid="stBaseButton-secondary"] {
+        margin: 0 auto !important;
     }
     div[data-testid="stAlert"] {
         border-radius: 0 !important;
@@ -1334,34 +1371,119 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+st.markdown(
+    """
+    <style>
+        .st-key-materials-upload-card [data-testid="stFileUploader"] {
+            width: 100% !important;
+        }
+
+        .st-key-materials-upload-card [data-testid="stFileUploaderDropzone"] {
+            position: relative !important;
+            width: 100% !important;
+            min-height: 3rem !important;
+            padding: 0 !important;
+            background: #ffffff !important;
+            border: 0 !important;
+            border-radius: 12px !important;
+            box-shadow: 0 5px 13px rgba(0, 0, 0, 0.2) !important;
+            overflow: hidden !important;
+            cursor: pointer !important;
+        }
+
+        .st-key-materials-upload-card [data-testid="stFileUploaderDropzone"] section {
+            min-height: 3rem !important;
+            padding: 0 !important;
+            background: transparent !important;
+            border: 0 !important;
+            box-shadow: none !important;
+        }
+
+        .st-key-materials-upload-card [data-testid="stFileUploaderDropzone"] section > div,
+        .st-key-materials-upload-card [data-testid="stFileUploaderDropzone"] section > div > div {
+            background: transparent !important;
+            border: 0 !important;
+            box-shadow: none !important;
+        }
+
+        .st-key-materials-upload-card [data-testid="stFileUploaderDropzone"]::before {
+            content: "Upload";
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #111111;
+            font-size: 1rem;
+            font-weight: 500;
+            line-height: 1;
+            background: #ffffff;
+            pointer-events: none;
+            z-index: 2;
+        }
+
+        .st-key-materials-upload-card [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzoneInstructions"],
+        .st-key-materials-upload-card [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] small,
+        .st-key-materials-upload-card [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] svg,
+        .st-key-materials-upload-card [data-testid="stFileUploader"] [data-testid="stBaseButton-secondary"] {
+            opacity: 0 !important;
+        }
+
+        .st-key-materials-upload-card [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzoneInstructions"] {
+            height: 0 !important;
+            min-height: 0 !important;
+            margin: 0 !important;
+            overflow: hidden !important;
+        }
+
+        .st-key-materials-upload-card [data-testid="stFileUploader"] [data-testid="stBaseButton-secondary"] {
+            height: 0 !important;
+            min-height: 0 !important;
+            padding: 0 !important;
+            border: 0 !important;
+            margin: 0 !important;
+        }
+
+        .st-key-materials-upload-card [data-testid="stFileUploaderDropzone"]:hover,
+        .st-key-materials-upload-card [data-testid="stFileUploaderDropzone"]:focus-within {
+            background: #ffffff !important;
+            border: 0 !important;
+            box-shadow: 0 5px 13px rgba(0, 0, 0, 0.2) !important;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 render_title("物资需求", "为各场馆录入物资配送需求，数据将用于 VRP 路径优化。")
+if not is_data_saved("venues"):
+    render_pending_step_state(
+        anchor_name="sec-upload",
+        container_key="materials-empty-card",
+        warning_message="尚未完成场馆录入，请先完成上一步。",
+        info_message="当前页面为物资需求录入视图，需要先在“场馆录入”页面完成并保存至少一个场馆后，才能继续填写或导入物资需求。",
+        prev_page="pages/2_venues.py",
+        next_page="pages/4_vehicles.py",
+        key_prefix="materials-guard-nav",
+        next_block_message="请先完成并保存场馆数据后，再进入下一步。",
+    )
 
 if not venue_names:
-    st.markdown(
-        """
-        <div class="glp-empty-banner">
-            请先在【场馆录入】页面添加场馆后再录入物资需求
-        </div>
-        """,
-        unsafe_allow_html=True,
+    render_pending_step_state(
+        anchor_name="sec-upload",
+        container_key="materials-empty-card",
+        warning_message="当前没有可用的场馆数据。",
+        info_message="请先返回“场馆录入”页面添加并保存场馆数据，然后再继续录入物资需求。",
+        prev_page="pages/2_venues.py",
+        next_page="pages/4_vehicles.py",
+        key_prefix="materials-nav-empty",
+        next_block_message="请先完成并保存场馆数据后，再进入下一步。",
     )
-    render_page_nav("pages/2_venues.py", "pages/4_vehicles.py", key_prefix="materials-nav")
-    st.stop()
 
 
 with st.container(key="materials-upload-card"):
     anchor("sec-upload")
     st.markdown(
-        '<div class="glp-material-card-title">上传文件导入物资需求</div>',
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        """
-        <div class="glp-info-panel">
-            <b>支持格式:</b>&nbsp;&nbsp;CSV/Excel(xlsx/xls)/TXT/JSON<br/>
-            <b>智能处理:</b>&nbsp;&nbsp;自动跳过标题行、定位真实表头、识别物资列、过滤合计列，并统一换算为 kg
-        </div>
-        """,
+        '<div class="glp-material-card-title">导入文件</div>',
         unsafe_allow_html=True,
     )
 
@@ -1374,7 +1496,6 @@ with st.container(key="materials-upload-card"):
         '<div class="glp-upload-note">支持格式：CSV/Excel/TXT/JSON</div>',
         unsafe_allow_html=True,
     )
-
     mapped_df: pd.DataFrame | None = None
     upload_material_columns: list[str] = []
     mapped_display_df: pd.DataFrame | None = None
@@ -1464,22 +1585,33 @@ with st.container(key="materials-online-card"):
         disabled=[VENUE_COL],
         width="stretch",
         hide_index=True,
+        key="materials_online_editor",
         column_config={
             VENUE_COL: st.column_config.TextColumn("场馆名称", disabled=True, alignment="left"),
             **{col: st.column_config.TextColumn(col) for col in material_display_cols},
         },
     )
     preview_numeric_df, _, _ = parse_online_editor_df(edited, base_names, strict=False)
+    saved_numeric_snapshot = normalize_df(build_online_df(venue_names), base_names)
+    if st.session_state.get("demands"):
+        if preview_numeric_df.equals(saved_numeric_snapshot):
+            set_data_status("materials", "saved")
+        else:
+            set_data_status("materials", "dirty")
+    elif float(preview_numeric_df[TOTAL_COL].sum() if TOTAL_COL in preview_numeric_df.columns else 0.0) > 0:
+        set_data_status("materials", "dirty")
+    else:
+        set_data_status("materials", "empty")
     edited[TOTAL_COL] = (
         preview_numeric_df[material_display_cols].sum(axis=1).round(_WEIGHT_ROUND_DECIMALS)
         if material_display_cols else 0.0
     )
 
     metric_items = [
-        (_material_col_to_base_name(col), f"{preview_numeric_df[col].sum():,.3f}kg")
+        (_material_col_to_base_name(col), f"{preview_numeric_df[col].sum():,.2f}kg")
         for col in material_display_cols
     ]
-    metric_items.append(("总计", f"{preview_numeric_df[TOTAL_COL].sum():,.3f}kg"))
+    metric_items.append(("总计", f"{preview_numeric_df[TOTAL_COL].sum():,.2f}kg"))
     for start in range(0, len(metric_items), 4):
         row_items = metric_items[start:start + 4]
         metric_cols = st.columns(len(row_items))
@@ -1516,4 +1648,10 @@ with st.container(key="materials-online-card"):
     else:
         st.info("暂无物资需求数据")
 
-render_page_nav("pages/2_venues.py", "pages/4_vehicles.py", key_prefix="materials-nav")
+render_page_nav(
+    "pages/2_venues.py",
+    "pages/4_vehicles.py",
+    key_prefix="materials-nav",
+    can_go_next=is_data_saved("materials"),
+    next_block_message="物资需求尚未保存，请先点击【确认合并到需求列表】或【保存在线填写数据】。",
+)

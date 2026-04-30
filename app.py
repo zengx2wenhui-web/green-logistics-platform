@@ -8,6 +8,7 @@ import streamlit as st
 
 from pages._bottom_nav import render_page_nav
 from pages._ui_shared import inject_sidebar_navigation_label, render_sidebar_navigation
+from utils.amap_api import DEFAULT_AMAP_API_KEY
 from utils.vehicle_lib import VEHICLE_LIB
 
 
@@ -72,7 +73,7 @@ def init_session_state() -> None:
         st.session_state.distance_matrix = None
 
     if "api_key_amap" not in st.session_state:
-        st.session_state.api_key_amap = ""
+        st.session_state.api_key_amap = DEFAULT_AMAP_API_KEY
 
     if "vehicle_type" not in st.session_state:
         st.session_state.vehicle_type = "diesel"
@@ -201,7 +202,14 @@ def inject_home_style(hero_b64: str) -> None:
             color: #111;
             font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif;
         }}
-        header[data-testid="stHeader"],
+        header[data-testid="stHeader"] {{
+            background: transparent !important;
+            z-index: 10001 !important;
+        }}
+        [data-testid="stHeader"] {{
+            background: transparent !important;
+            z-index: 10001 !important;
+        }}
         .stAppToolbar,
         [data-testid="stToolbar"],
         [data-testid="stToolbarActions"],
@@ -220,16 +228,22 @@ def inject_home_style(hero_b64: str) -> None:
             max-width: 214px;
             border-right: 0;
         }}
-        [data-testid="stSidebar"][aria-expanded="false"] {{
+        [data-testid="stSidebar"][aria-expanded="true"] {{
             min-width: 214px !important;
             max-width: 214px !important;
-            transform: translateX(0) !important;
-            margin-left: 0 !important;
+        }}
+        [data-testid="stSidebarResizer"] {{
+            display: none !important;
+            pointer-events: none !important;
         }}
         [data-testid="collapsedControl"],
         button[kind="header"][aria-label*="sidebar"],
         [data-testid="stSidebarCollapseButton"] {{
-            display: none !important;
+            display: flex !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            pointer-events: auto !important;
+            z-index: 10002 !important;
         }}
         [data-testid="stSidebar"] > div:first-child {{
             background: #365f10;

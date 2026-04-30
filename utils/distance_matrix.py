@@ -251,8 +251,10 @@ def build_distance_matrix(
         lngs = np.array([nd["lng"] for nd in nodes])
         lats = np.array([nd["lat"] for nd in nodes])
         raw = haversine_matrix_vectorized(lngs, lats) * road_factor
-        dist_mat = np.round(raw, 2)
-        time_mat = np.round(dist_mat / 60 * 60, 1)  # 假设 60 km/h
+        # 保留算法层距离精度，避免极短路段在这里被舍入成 0 km。
+        # 展示层仍会按页面需要做格式化。
+        dist_mat = raw.astype(float)
+        time_mat = np.round(raw / 60 * 60, 1)  # 假设 60 km/h
         np.fill_diagonal(dist_mat, 0.0)
         np.fill_diagonal(time_mat, 0.0)
 
