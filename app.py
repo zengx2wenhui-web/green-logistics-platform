@@ -7,7 +7,7 @@ from pathlib import Path
 import streamlit as st
 
 from pages._bottom_nav import render_page_nav
-from pages._ui_shared import inject_sidebar_navigation_label, render_sidebar_navigation
+from ._ui_shared import inject_sidebar_navigation_label, render_sidebar_navigation
 from utils.amap_api import DEFAULT_AMAP_API_KEY
 from utils.vehicle_lib import VEHICLE_LIB
 

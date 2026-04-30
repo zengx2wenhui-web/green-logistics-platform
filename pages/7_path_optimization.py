@@ -17,7 +17,7 @@ if str(_APP_ROOT) not in sys.path:
 
 from pages._bottom_nav import render_page_nav
 from pages._route_analysis_shared import add_route_map_legend
-from pages._ui_shared import (
+from ._ui_shared import (
     anchor,
     get_data_status,
     inject_base_style,
