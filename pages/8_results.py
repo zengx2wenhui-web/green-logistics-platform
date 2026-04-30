@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import sys
@@ -24,7 +24,7 @@ from pages._dashboard_shared import (
     render_scenario_triptych,
 )
 from pages._route_analysis_shared import add_route_map_legend
-from ._ui_shared import (
+from pages._ui_shared import (
     anchor,
     inject_base_style,
     inject_sidebar_navigation_label,

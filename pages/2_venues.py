@@ -16,7 +16,7 @@ if str(_APP_ROOT) not in sys.path:
     sys.path.insert(0, str(_APP_ROOT))
 
 from pages._bottom_nav import render_page_nav
-from ._ui_shared import (
+from pages._ui_shared import (
     anchor,
     inject_base_style,
     inject_sidebar_navigation_label,
