@@ -858,7 +858,7 @@ def main() -> None:
     init_session_state()
 
     inject_home_style(resolve_hero_image())
-    render_sidebar_navigation()
+    render_sidebar_navigation("app.py")
     render_hero()
     render_architecture_html_card()
     render_home_action_section()

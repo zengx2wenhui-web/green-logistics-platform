@@ -131,7 +131,7 @@ def add_map_legend(map_obj: folium.Map) -> None:
 st.set_page_config(page_title="场馆录入", page_icon="🏟️", layout="wide", initial_sidebar_state="expanded")
 inject_sidebar_navigation_label()
 inject_base_style()
-render_sidebar_navigation()
+render_sidebar_navigation("pages/2_venues.py")
 render_top_nav(
     tabs=[
         ("场馆录入", "sec-entry"),

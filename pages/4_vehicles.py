@@ -40,8 +40,8 @@ VEHICLE_META = {
         "name": "柴油重卡",
         "fuel_type": "diesel",
         "representative_models": "解放 JH6 / 东风天龙 KX",
-        "load_min": 10.0,
-        "load_max": 49.0,
+        "load_min": 8.0,
+        "load_max": 35.0,
         "range_min": 600.0,
         "range_max": 1200.0,
         "image": "柴油重卡.png",
@@ -50,8 +50,8 @@ VEHICLE_META = {
         "name": "LNG天然气重卡",
         "fuel_type": "lng",
         "representative_models": "陕汽德龙 LNG / 欧曼EST LNG",
-        "load_min": 10.0,
-        "load_max": 49.0,
+        "load_min": 7.0,
+        "load_max": 22.0,
         "range_min": 450.0,
         "range_max": 900.0,
         "image": "lng天然气.png",
@@ -60,8 +60,8 @@ VEHICLE_META = {
         "name": "混合动力 (HEV)",
         "fuel_type": "hybrid",
         "representative_models": "混动干线重卡",
-        "load_min": 10.0,
-        "load_max": 49.0,
+        "load_min": 8.0,
+        "load_max": 15.0,
         "range_min": 500.0,
         "range_max": 1000.0,
         "image": "柴电混动.png",
@@ -71,7 +71,7 @@ VEHICLE_META = {
         "fuel_type": "phev",
         "representative_models": "插混物流重卡",
         "load_min": 10.0,
-        "load_max": 49.0,
+        "load_max": 20.0,
         "range_min": 450.0,
         "range_max": 950.0,
         "image": "插电混动.png",
@@ -80,8 +80,8 @@ VEHICLE_META = {
         "name": "纯电动 (BEV)",
         "fuel_type": "electric",
         "representative_models": "换电重卡 / 纯电城配重卡",
-        "load_min": 5.0,
-        "load_max": 30.0,
+        "load_min": 12.0,
+        "load_max": 22.0,
         "range_min": 180.0,
         "range_max": 420.0,
         "image": "纯电动.png",
@@ -91,7 +91,7 @@ VEHICLE_META = {
         "fuel_type": "hydrogen",
         "representative_models": "氢燃料重卡",
         "load_min": 15.0,
-        "load_max": 35.0,
+        "load_max": 25.0,
         "range_min": 350.0,
         "range_max": 700.0,
         "image": "氢燃料电池.png",
@@ -114,6 +114,8 @@ def build_vehicle_catalog() -> list[dict]:
     catalog = []
     for vehicle_id, params in VEHICLE_LIB.items():
         meta = VEHICLE_META[vehicle_id]
+        recommended_load_min, recommended_load_max = params.get("load_range_ton", (0.0, 0.0))
+        gvw_min, gvw_max = params.get("gvw_range", (0.0, 0.0))
         factor = float(params.get("intensity_g_per_tkm", 0) or 0) / 1000.0
         catalog.append(
             {
@@ -121,9 +123,11 @@ def build_vehicle_catalog() -> list[dict]:
                 "name": meta["name"],
                 "fuel_type": meta["fuel_type"],
                 "representative_models": meta["representative_models"],
-                "max_load_ton_min": meta["load_min"],
-                "max_load_ton_max": meta["load_max"],
-                "max_load_ton_default": round((meta["load_min"] + meta["load_max"]) / 2, 1),
+                "recommended_load_ton_min": float(recommended_load_min),
+                "recommended_load_ton_max": float(recommended_load_max),
+                "default_load_ton": round((float(recommended_load_min) + float(recommended_load_max)) / 2, 1),
+                "gvw_ton_min": float(gvw_min),
+                "gvw_ton_max": float(gvw_max),
                 "range_km_min": meta["range_min"],
                 "range_km_max": meta["range_max"],
                 "emission_factor_min": factor,
@@ -356,8 +360,8 @@ for vehicle in vehicle_types:
         )
     if load_key not in st.session_state:
         st.session_state[load_key] = float(
-            (existing or {}).get("load_ton", vehicle["max_load_ton_default"])
-            or vehicle["max_load_ton_default"]
+            (existing or {}).get("load_ton", vehicle["default_load_ton"])
+            or vehicle["default_load_ton"]
         )
 
     qty_value = int(st.session_state[qty_key] or 0)
@@ -390,7 +394,7 @@ else:
 
 inject_sidebar_navigation_label()
 inject_base_style()
-render_sidebar_navigation()
+render_sidebar_navigation("pages/4_vehicles.py")
 render_top_nav(
     tabs=[("车型库概览", "sec-overview"), ("在线配置", "sec-online"), ("环境参数", "sec-environment")],
     active_idx=0,
@@ -586,7 +590,8 @@ with st.container(key="materials-upload-card"):
 
     with col_main_img:
         img_data = encode_vehicle_image(vehicle["image"])
-        load_text = f"{vehicle['max_load_ton_min']:.0f}~{vehicle['max_load_ton_max']:.0f} 吨"
+        load_text = f"{vehicle['recommended_load_ton_min']:.0f}~{vehicle['recommended_load_ton_max']:.0f} 吨"
+        gvw_text = f"{vehicle['gvw_ton_min']:.0f}~{vehicle['gvw_ton_max']:.0f} 吨"
         range_text = f"{vehicle['range_km_min']:.0f}~{vehicle['range_km_max']:.0f} km"
         emission_text = f"{vehicle['emission_factor_min']:.3f}"
         if img_data:
@@ -596,7 +601,8 @@ with st.container(key="materials-upload-card"):
                     <img src="data:image/png;base64,{img_data}" class="glp-carousel-img-main">
                     <div class="glp-vehicle-info-box">
                         <div><b>代表车型:</b> {escape(str(vehicle['representative_models']))}</div>
-                        <div><b>典型载重范围:</b> {escape(load_text)}</div>
+                        <div><b>推荐载重区间:</b> {escape(load_text)}</div>
+                        <div><b>对应总重 GVW:</b> {escape(gvw_text)}</div>
                         <div><b>续航范围:</b> {escape(range_text)}</div>
                         <div><b>碳排因子:</b> {escape(emission_text)} kg CO₂/吨km</div>
                         <div><b>相对柴油减排:</b> {escape(str(vehicle['reduction_vs_diesel']))}</div>
@@ -618,7 +624,6 @@ with st.container(key="materials-upload-card"):
             st.rerun()
 
 vehicle_configs: dict[str, dict] = {}
-
 with st.container(key="materials-online-card"):
     anchor("sec-online")
     st.markdown('<div class="glp-vehicle-card-title" style="margin-bottom: 1.5rem;">在线配置</div>', unsafe_allow_html=True)
@@ -635,7 +640,7 @@ with st.container(key="materials-online-card"):
         if qty_key not in st.session_state:
             st.session_state[qty_key] = int((existing or {}).get("count_max", (existing or {}).get("count", 0)) or 0)
         if load_key not in st.session_state:
-            st.session_state[load_key] = float((existing or {}).get("load_ton", vehicle["max_load_ton_default"]) or vehicle["max_load_ton_default"])
+            st.session_state[load_key] = float((existing or {}).get("load_ton", vehicle["default_load_ton"]) or vehicle["default_load_ton"])
 
         def decrement_qty(k: str = qty_key) -> None:
             if st.session_state[k] > 0:
@@ -654,7 +659,7 @@ with st.container(key="materials-online-card"):
                         unsafe_allow_html=True,
                     )
                     st.caption(
-                        f"建议载重 {vehicle['max_load_ton_min']:.0f}~{vehicle['max_load_ton_max']:.0f} 吨/辆"
+                        f"推荐载重区间 {vehicle['recommended_load_ton_min']:.0f}~{vehicle['recommended_load_ton_max']:.0f} 吨/辆"
                     )
                 with minus_col:
                     st.button("－", key=f"btn_minus_{vehicle_id}", width='stretch', on_click=decrement_qty)
@@ -685,6 +690,9 @@ with st.container(key="materials-online-card"):
                     )
                 qty_value = int(st.session_state[qty_key])
                 load_value = float(st.session_state[load_key])
+                recommended_range_text = (
+                    f"{vehicle['recommended_load_ton_min']:.0f}~{vehicle['recommended_load_ton_max']:.0f} 吨/辆"
+                )
                 if qty_value > 0 and load_value > 0:
                     vehicle_configs[vehicle_id] = {
                         "vehicle_type": vehicle_id,
@@ -692,6 +700,7 @@ with st.container(key="materials-online-card"):
                         "fuel_type": vehicle["fuel_type"],
                         "count_max": qty_value,
                         "load_ton": load_value,
+                        "recommended_range_text": recommended_range_text,
                     }
 
     has_new_energy = any(
@@ -740,6 +749,7 @@ with st.container(key="materials-online-card"):
                     "车型": config["name"],
                     "数量上限(辆)": config["count_max"],
                     "实际载重(吨/辆)": round(config["load_ton"], 2),
+                    "推荐载重区间(吨/辆)": str(config.get("recommended_range_text", "")),
                     "总运力上限(吨)": round(config["count_max"] * config["load_ton"], 1),
                 }
                 for config in vehicle_configs.values()

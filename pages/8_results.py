@@ -23,7 +23,12 @@ from pages._dashboard_shared import (
     inject_green_dashboard_style,
     render_scenario_triptych,
 )
-from pages._route_analysis_shared import add_route_map_legend
+from pages._route_analysis_shared import (
+    add_route_map_legend,
+    build_depot_results_dataframe,
+    build_fleet_composition_dataframe,
+    get_depot_display_name,
+)
 from pages._ui_shared import (
     anchor,
     inject_base_style,
@@ -87,6 +92,13 @@ def get_route_vehicle_display_name(route_result: dict, default_name: str) -> str
     return default_name
 
 
+def get_route_vehicle_capacity_ton(route_result: dict) -> float:
+    try:
+        return round(float(route_result.get("vehicle_capacity_kg", 0) or 0) / 1000.0, 2)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def get_total_demand_value(demand_data: object) -> float:
     if isinstance(demand_data, dict):
         if "总需求量" in demand_data:
@@ -108,6 +120,7 @@ def infer_total_demand_kg(route_results: list[dict], demands_dict: dict) -> floa
 def get_route_path_names(route_result: dict, route_context: dict) -> list[str]:
     return get_ordered_route_names(route_result, route_context)
 
+
 def add_scenario_columns(df: pd.DataFrame, *, scenario_id: str, scenario_label: str) -> pd.DataFrame:
     if df.empty:
         return df
@@ -124,6 +137,7 @@ def build_dispatch_dataframe(route_results: list[dict], vehicle_name: str, route
             {
                 "车辆编号": route_result.get("vehicle_name", f"车辆 {index}"),
                 "车型": get_route_vehicle_display_name(route_result, vehicle_name),
+                "单车载重上限(吨/辆)": get_route_vehicle_capacity_ton(route_result) or None,
                 "路线": " -> ".join(get_route_path_names(route_result, route_context)),
                 "场馆数": len(route_result.get("visited_venue_names", route_result.get("visits", []))),
                 "总装载(kg)": round(float(route_result.get("total_load_kg", 0) or 0), 2),
@@ -143,6 +157,7 @@ def build_route_carbon_dataframe(route_results: list[dict], vehicle_name: str) -
             {
                 "车辆编号": route_result.get("vehicle_name", f"车辆 {index}"),
                 "车型": get_route_vehicle_display_name(route_result, vehicle_name),
+                "单车载重上限(吨/辆)": get_route_vehicle_capacity_ton(route_result) or None,
                 "总距离(km)": round(total_distance, 2),
                 "总碳排放(kg CO2)": round(total_carbon, 2),
                 "碳排效率(kg/km)": round(total_carbon / max(total_distance, 0.01), 4),
@@ -175,6 +190,7 @@ def build_load_export_dataframe(route_results: list[dict], vehicle_name: str, ro
             row = {
                 "车辆编号": vehicle_id,
                 "车型": vehicle_type,
+                "单车载重上限(吨/辆)": get_route_vehicle_capacity_ton(route_result) or None,
                 "路线": route_path,
                 "场馆": stop.get("venue", ""),
             }
@@ -198,6 +214,7 @@ def build_route_segment_export_dataframe(route_results: list[dict], vehicle_name
                 {
                     "车辆编号": route_result.get("vehicle_name", f"车辆 {index}"),
                     "车型": get_route_vehicle_display_name(route_result, vehicle_name),
+                    "单车载重上限(吨/辆)": get_route_vehicle_capacity_ton(route_result) or None,
                     "分段": segment_labels[seg_index - 1] if seg_index - 1 < len(segment_labels) else f"分段 {seg_index}",
                     "距离(km)": round(float(segment.get("distance_km", 0) or 0), 2),
                     "装载(kg)": round(float(segment.get("load_kg", 0) or 0), 2),
@@ -208,9 +225,7 @@ def build_route_segment_export_dataframe(route_results: list[dict], vehicle_name
 
 
 def build_depot_dataframe(depot_results_list: list[dict]) -> pd.DataFrame:
-    if not depot_results_list:
-        return pd.DataFrame()
-    return pd.DataFrame(depot_results_list)
+    return build_depot_results_dataframe(depot_results_list)
 
 
 def build_map(
@@ -275,7 +290,7 @@ def build_map(
         depot_lat = depot.get("纬度", depot.get("çº¬åº¦", 0))
         depot_lng = depot.get("经度", depot.get("ç»åº¦", 0))
         if depot_lat and depot_lng:
-            depot_name = str(depot.get("中转仓名称") or depot.get("warehouse_name") or f"中转仓 {depot_index}")
+            depot_name = get_depot_display_name(depot, depot_index)
             folium.Marker(
                 [depot_lat, depot_lng],
                 popup=folium.Popup(f"<b>{depot_name}</b>", max_width=360),
@@ -310,7 +325,7 @@ st.set_page_config(page_title="优化结果", page_icon="📊", layout="wide", i
 inject_sidebar_navigation_label()
 inject_base_style()
 inject_green_dashboard_style("results")
-render_sidebar_navigation()
+render_sidebar_navigation("pages/8_results.py")
 
 results = st.session_state.get("optimization_results") or st.session_state.get("results")
 has_results = bool(results)
@@ -365,10 +380,6 @@ terminal_emission = float(results.get("terminal_emission", 0) or 0)
 trunk_emission = float(results.get("trunk_emission", 0) or 0)
 carbon_reduction = max(baseline_emission - total_emission, 0.0)
 total_demand_kg = infer_total_demand_kg(route_results, demands_dict)
-optimization_method = str(results.get("optimization_method") or "OR-Tools FSMVRP")
-distance_method = str(results.get("distance_method") or "距离模型")
-clustering_method = str(results.get("clustering_method") or "中转仓分配")
-timestamp = str(results.get("timestamp") or "")
 has_trunk_breakdown = bool(trunk_routes) or trunk_distance_km > 0 or trunk_emission > 0
 distance_delta_text = f"末端 {terminal_distance_km:.2f} / 干线 {trunk_distance_km:.2f}" if has_trunk_breakdown else "配送闭环"
 primary_emission_label = "末端配送碳排" if has_trunk_breakdown else "路线碳排"
@@ -434,11 +445,6 @@ with st.container(key="results-card-summary"):
     with col4:
         st.metric("减排比例", f"{reduction_pct:.2f}%", delta=f"{len(depot_results_list)} 个中转仓")
 
-    st.caption(
-        f"优化方式：{optimization_method} | 距离模型：{distance_method} | 中转仓分配：{clustering_method}"
-        + (f" | 计算时间：{timestamp}" if timestamp else "")
-    )
-
     if not depot_df.empty:
         st.markdown("### 中转仓结果")
         st.dataframe(depot_df, width="stretch", hide_index=True)
@@ -458,6 +464,13 @@ with st.container(key="results-card-tabs"):
     active_route_context = build_route_context(nodes, active_depot_results)
     active_dispatch_df = build_dispatch_dataframe(active_route_results, active_vehicle_name, active_route_context)
     active_route_carbon_df = build_route_carbon_dataframe(active_route_results, active_vehicle_name)
+    active_configured_fleet_rows = list(active_scenario.get("configured_fleet_by_type_capacity", []) or [])
+    if not active_configured_fleet_rows and str(active_scenario.get("id") or "") == "optimized_current":
+        active_configured_fleet_rows = list(results.get("configured_fleet_by_type_capacity", []) or [])
+    active_fleet_df = build_fleet_composition_dataframe(
+        active_configured_fleet_rows,
+        list(active_scenario.get("fleet_used_by_type_capacity", []) or []),
+    )
 
     active_scenario_summary = (
         scenario_df[scenario_df["方案ID"] == st.session_state.get("results_selected_scenario_id")]
@@ -475,6 +488,10 @@ with st.container(key="results-card-tabs"):
             st.metric("当前方案车辆数", f"{int(summary_row['车辆数'])} 辆")
         with active_col4:
             st.metric("当前方案枢纽数", f"{int(summary_row['中转枢纽数'])} 个")
+
+    if not active_fleet_df.empty:
+        st.markdown("#### 当前方案异构车队构成")
+        st.dataframe(active_fleet_df, hide_index=True, width="stretch")
 
     map_tab, carbon_tab, dispatch_tab, export_tab = st.tabs(["物流网络地图", "碳排放对比", "详细结果", "数据导出"])
 
@@ -519,7 +536,9 @@ with st.container(key="results-card-tabs"):
                         "减排量(kg CO2)",
                         "减排比例(%)",
                         "总距离(km)",
+                        "车辆数",
                         "中转枢纽数",
+                        "车队构成",
                     ]
                 ],
                 hide_index=True,
@@ -545,7 +564,13 @@ with st.container(key="results-card-tabs"):
 
         if active_route_results:
             for index, route_result in enumerate(active_route_results, start=1):
-                vehicle_label = f"{route_result.get('vehicle_name', f'车辆 {index}')}（{get_route_vehicle_display_name(route_result, active_vehicle_name)}）"
+                vehicle_capacity_ton = get_route_vehicle_capacity_ton(route_result)
+                capacity_suffix = f" / {vehicle_capacity_ton:.1f} 吨" if vehicle_capacity_ton > 0 else ""
+                vehicle_label = (
+                    f"{route_result.get('vehicle_name', f'车辆 {index}')}（"
+                    f"{get_route_vehicle_display_name(route_result, active_vehicle_name)}{capacity_suffix}"
+                    f"）"
+                )
                 with st.expander(vehicle_label, expanded=False):
                     st.markdown(f"**路线** {' -> '.join(get_route_path_names(route_result, active_route_context))}")
                     detail_df = build_route_load_dataframe(route_result)
@@ -553,12 +578,14 @@ with st.container(key="results-card-tabs"):
                         st.dataframe(detail_df, width="stretch", hide_index=True)
                     max_load = float(route_result.get("vehicle_capacity_kg", results.get("vehicle_capacity_kg", 0)) or 0)
                     total_load = float(route_result.get("total_load_kg", 0) or 0)
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2, col3, col4 = st.columns(4)
                     with col1:
                         st.metric("总装载量", f"{total_load:.1f} kg", delta=f"装载率 {total_load / max_load * 100:.1f}%" if max_load > 0 else "--")
                     with col2:
-                        st.metric("总距离", f"{float(route_result.get('total_distance_km', 0) or 0):.2f} km")
+                        st.metric("单车载重上限", f"{vehicle_capacity_ton:.1f} 吨" if vehicle_capacity_ton > 0 else "--")
                     with col3:
+                        st.metric("总距离", f"{float(route_result.get('total_distance_km', 0) or 0):.2f} km")
+                    with col4:
                         st.metric("总碳排放", f"{float(route_result.get('total_carbon_kg', 0) or 0):.2f} kg CO2")
         else:
             st.info("当前方案没有可展示的路线明细。")

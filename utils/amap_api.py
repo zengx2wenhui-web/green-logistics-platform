@@ -18,7 +18,8 @@ _RATE_LIMIT_MAX_WAIT: float = 5.0  # 限流最长等待时间（秒）
 _MAX_RETRIES: int = 3          # 最大重试次数
 _RETRY_BASE_DELAY: float = 1.0 # 重试基础延迟（秒）
 _REQUEST_TIMEOUT: int = 10     # 单次请求超时（秒）
-_CACHE_DB_PATH: Path = Path("data/cache/amap_cache.db")
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_CACHE_DB_PATH: Path = _PROJECT_ROOT / "data" / "cache" / "amap_cache.db"
 
 # 中国经纬度合法范围
 _LNG_RANGE: Tuple[float, float] = (73.0, 135.0)

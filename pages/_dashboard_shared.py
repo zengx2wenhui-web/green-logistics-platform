@@ -352,6 +352,7 @@ def build_scenario_summary_dataframe(comparison_scenarios: list[dict]) -> pd.Dat
                 "干线碳排(kg CO2)": round(float(scenario.get("trunk_emission", 0) or 0), 2),
                 "车辆数": int(scenario.get("num_vehicles_used", 0) or 0),
                 "中转枢纽数": len(list(scenario.get("depot_results", []) or [])),
+                "车队构成": str(scenario.get("fleet_mix_text") or ""),
                 "减排量(kg CO2)": round(reduction_kg, 2),
                 "减排比例(%)": round(reduction_pct, 1),
             }

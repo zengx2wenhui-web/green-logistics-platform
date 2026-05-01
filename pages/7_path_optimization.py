@@ -16,7 +16,7 @@ if str(_APP_ROOT) not in sys.path:
     sys.path.insert(0, str(_APP_ROOT))
 
 from pages._bottom_nav import render_page_nav
-from pages._route_analysis_shared import add_route_map_legend
+from pages._route_analysis_shared import add_route_map_legend, build_depot_results_dataframe, build_fleet_summary_dataframe
 from pages._ui_shared import (
     anchor,
     get_data_status,
@@ -30,6 +30,12 @@ from pages._ui_shared import (
 from utils.amap_api import DEFAULT_AMAP_API_KEY
 from utils.carbon_calc import calc_emission, compute_route_emission
 from utils.distance_matrix import build_distance_matrix_from_coords
+from utils.fleet_summary import (
+    build_configured_fleet_summary,
+    build_count_by_type,
+    build_route_fleet_summary,
+    format_fleet_mix_text,
+)
 from utils.file_reader import normalize_name
 from utils.route_display import (
     build_route_context,
@@ -62,7 +68,7 @@ VEHICLE_NAME_MAP = {
 st.set_page_config(page_title="路径优化", page_icon="🗺️", layout="wide", initial_sidebar_state="expanded")
 inject_sidebar_navigation_label()
 inject_base_style()
-render_sidebar_navigation()
+render_sidebar_navigation("pages/7_path_optimization.py")
 render_top_nav(
     tabs=[("数据检查", "sec-check"), ("执行优化", "sec-exec"), ("优化结果", "sec-results")],
     active_idx=0,
@@ -404,12 +410,15 @@ def clone_route_result_as_diesel(
 ) -> dict:
     cloned_route = deepcopy(route_result)
     diesel_display_name = display_vehicle_name("diesel")
+    diesel_params = get_vehicle_params("diesel") or {}
     cloned_route["vehicle_type_id"] = "diesel"
     cloned_route["vehicle_type"] = diesel_display_name
     cloned_route["vehicle_display_name"] = diesel_display_name
+    cloned_route["vehicle_spec_label"] = f"{diesel_display_name} / {float(cloned_route.get('vehicle_capacity_kg', 0) or 0) / 1000.0:.1f} t"
+    cloned_route["cold_start_g"] = diesel_params.get("cold_start_g", 0)
 
     updated_segments: list[dict[str, object]] = []
-    total_carbon_kg = 0.0
+    total_carbon_kg = float(diesel_params.get("cold_start_g", 0) or 0) / 1000.0
     trunk_carbon_kg = 0.0
     for segment in cloned_route.get("segments", []) or []:
         updated_segment = dict(segment)
@@ -524,6 +533,10 @@ def build_comparison_scenario(
         (reduction_vs_baseline / baseline_emission * 100) if baseline_emission > 0 else 0.0,
         2,
     )
+    fleet_used_by_type_capacity = build_route_fleet_summary(
+        route_results,
+        name_resolver=display_vehicle_name,
+    )
     return {
         "id": scenario_id,
         "label": label,
@@ -539,6 +552,9 @@ def build_comparison_scenario(
         "num_vehicles_used": len(route_results),
         "vehicle_type_id": vehicle_type_id,
         "vehicle_display_name": vehicle_display_name,
+        "fleet_used_by_type": build_count_by_type(fleet_used_by_type_capacity),
+        "fleet_used_by_type_capacity": fleet_used_by_type_capacity,
+        "fleet_mix_text": format_fleet_mix_text(fleet_used_by_type_capacity),
         "reduction_vs_baseline": reduction_vs_baseline,
         "reduction_vs_baseline_pct": reduction_vs_baseline_pct,
     }
@@ -682,11 +698,106 @@ def build_fleet_capacity_snapshot(vehicle_list: list[dict]) -> dict[str, object]
         max_cap_kg = max(max_cap_kg, single_cap)
         total_cap_kg += single_cap * count_max
 
+    configured_fleet_summary = build_configured_fleet_summary(
+        normalized_fleet,
+        name_resolver=display_vehicle_name,
+    )
+
     return {
         "normalized_fleet": normalized_fleet,
         "max_cap_kg": max_cap_kg,
         "total_cap_kg": total_cap_kg,
+        "fleet_config_by_type": build_count_by_type(configured_fleet_summary),
+        "fleet_config_by_type_capacity": configured_fleet_summary,
+        "fleet_config_summary_text": format_fleet_mix_text(configured_fleet_summary),
     }
+
+
+def _get_vehicle_capacity_kg(load_ton: object) -> int:
+    try:
+        return int(round(float(load_ton or 0) * 1000))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _get_fleet_entry_key(vehicle: dict[str, object]) -> tuple[str, int]:
+    return (
+        str(vehicle.get("vehicle_type", "") or "").strip(),
+        _get_vehicle_capacity_kg(vehicle.get("load_ton", 0)),
+    )
+
+
+def _clone_normalized_fleet(vehicle_list: list[dict[str, object]]) -> list[dict[str, object]]:
+    cloned_fleet: list[dict[str, object]] = []
+    for vehicle in vehicle_list or []:
+        cloned_vehicle = dict(vehicle)
+        count_max = int(cloned_vehicle.get("count_max", cloned_vehicle.get("count", 0)) or 0)
+        capacity_kg = _get_vehicle_capacity_kg(cloned_vehicle.get("load_ton", 0))
+        if count_max <= 0 or capacity_kg <= 0:
+            continue
+
+        cloned_vehicle["count_max"] = count_max
+        cloned_vehicle["load_ton"] = capacity_kg / 1000.0
+        cloned_fleet.append(cloned_vehicle)
+    return cloned_fleet
+
+
+def _get_total_fleet_capacity_kg(vehicle_list: list[dict[str, object]]) -> int:
+    total_capacity_kg = 0
+    for vehicle in vehicle_list or []:
+        count_max = int(vehicle.get("count_max", vehicle.get("count", 0)) or 0)
+        if count_max <= 0:
+            continue
+        total_capacity_kg += _get_vehicle_capacity_kg(vehicle.get("load_ton", 0)) * count_max
+    return total_capacity_kg
+
+
+def _consume_used_fleet(
+    available_fleet: list[dict[str, object]],
+    solver_result: dict,
+) -> list[dict[str, object]]:
+    used_counts: dict[tuple[str, int], int] = {}
+    route_vehicle_ids = list(solver_result.get("route_vehicle_ids", []) or [])
+    vehicle_types = list(solver_result.get("vehicle_types", []) or [])
+    vehicle_capacities_kg = list(solver_result.get("vehicle_capacities_kg", []) or [])
+
+    for vehicle_pool_id in route_vehicle_ids:
+        if not (0 <= vehicle_pool_id < len(vehicle_types) and 0 <= vehicle_pool_id < len(vehicle_capacities_kg)):
+            raise RuntimeError("OR-Tools returned an invalid vehicle index while updating the remaining fleet.")
+
+        key = (
+            str(vehicle_types[vehicle_pool_id] or "").strip(),
+            int(vehicle_capacities_kg[vehicle_pool_id] or 0),
+        )
+        used_counts[key] = used_counts.get(key, 0) + 1
+
+    remaining_fleet: list[dict[str, object]] = []
+    for vehicle in available_fleet or []:
+        cloned_vehicle = dict(vehicle)
+        key = _get_fleet_entry_key(cloned_vehicle)
+        available_count = int(cloned_vehicle.get("count_max", cloned_vehicle.get("count", 0)) or 0)
+        consume_count = min(available_count, used_counts.get(key, 0))
+        remaining_count = available_count - consume_count
+
+        if consume_count:
+            next_count = used_counts.get(key, 0) - consume_count
+            if next_count > 0:
+                used_counts[key] = next_count
+            else:
+                used_counts.pop(key, None)
+
+        if remaining_count > 0:
+            cloned_vehicle["count_max"] = remaining_count
+            remaining_fleet.append(cloned_vehicle)
+
+    if used_counts:
+        overflow_desc = " | ".join(
+            f"{vehicle_type}/{capacity_kg}kg x{count}"
+            for (vehicle_type, capacity_kg), count in sorted(used_counts.items())
+        )
+        raise RuntimeError(f"Multi-depot routing exceeded the available fleet: {overflow_desc}")
+
+    return remaining_fleet
 
 
 def get_saved_vehicle_environment_config() -> dict[str, object]:
@@ -709,11 +820,13 @@ def solve_multi_depot_routes(
     time_limit: int,
     season: str,
     h2_source: str,
-) -> tuple[list[dict], list[dict], list[list[int]], list[dict]]:
+) -> tuple[list[dict], list[dict], list[list[int]], list[dict], dict[str, object]]:
     route_results: list[dict] = []
     trunk_routes: list[dict] = []
     routes: list[list[int]] = []
     global_vehicle_index = 0
+    remaining_fleet = _clone_normalized_fleet(normalized_fleet)
+    depot_solver_meta: list[dict[str, object]] = []
     warehouse_name = str(warehouse.get("name") or "总仓库")
     warehouse_route_node = build_route_node(
         name=warehouse_name,
@@ -732,11 +845,25 @@ def solve_multi_depot_routes(
         depot_assignments.setdefault(warehouse_idx, []).append(venue_idx)
 
     updated_depot_results = [dict(item) for item in (depot_results or [])]
+    depot_jobs: list[tuple[int, dict, list[int], float]] = []
 
     for depot_idx, warehouse_result in enumerate(clustering_result.get("warehouses", []) or []):
-        assigned_indices = depot_assignments.get(depot_idx, [])
+        assigned_indices = [
+            idx for idx in depot_assignments.get(depot_idx, [])
+            if 0 <= idx < len(venue_nodes)
+        ]
         if not assigned_indices:
             continue
+
+        assigned_demand_kg = sum(
+            get_total_demand_value(get_venue_demand(venue_nodes[idx]["name"], demands))
+            for idx in assigned_indices
+        )
+        depot_jobs.append((depot_idx, warehouse_result, assigned_indices, assigned_demand_kg))
+
+    depot_jobs.sort(key=lambda item: item[3], reverse=True)
+
+    for depot_idx, warehouse_result, assigned_indices, assigned_demand_kg in depot_jobs:
 
         depot_name = warehouse_result.get("nearest_candidate_name", f"中转仓{depot_idx + 1}")
         depot_lng = float(warehouse_result.get("lng", 0) or 0)
@@ -766,6 +893,16 @@ def solve_multi_depot_routes(
                 get_total_demand_value(get_venue_demand(venue_node["name"], demands))
             )
 
+        remaining_capacity_kg = _get_total_fleet_capacity_kg(remaining_fleet)
+        if not remaining_fleet or remaining_capacity_kg <= 0:
+            raise RuntimeError(
+                f"中转仓 {depot_name} 仍需配送 {assigned_demand_kg:,.0f} kg，但全局车队已无可用车辆。"
+            )
+        if assigned_demand_kg > remaining_capacity_kg:
+            raise RuntimeError(
+                f"中转仓 {depot_name} 需要 {assigned_demand_kg:,.0f} kg 运力，但剩余全局车队只有 {remaining_capacity_kg:,.0f} kg。"
+            )
+
         local_distance_matrix = build_distance_matrix_from_coords(
             local_coords,
             road_factor=1.3,
@@ -773,7 +910,7 @@ def solve_multi_depot_routes(
         solver_result = solve_fsmvrp_ortools(
             distance_matrix_km=local_distance_matrix,
             demands_kg=local_demands,
-            fleet=normalized_fleet,
+            fleet=remaining_fleet,
             depot=0,
             time_limit_seconds=time_limit,
             season=season,
@@ -799,6 +936,7 @@ def solve_multi_depot_routes(
         local_route_vehicle_ids = solver_result.get("route_vehicle_ids", [])
         local_vehicle_types = solver_result.get("vehicle_types", [])
         local_vehicle_capacities = solver_result.get("vehicle_capacities_kg", [])
+        local_fleet_used_summary = list(solver_result.get("fleet_used_by_type_capacity", []) or [])
         depot_route_records: list[dict] = []
 
         for local_route_idx, route in enumerate(local_routes):
@@ -815,6 +953,7 @@ def solve_multi_depot_routes(
                 "vehicle_type": vehicle_display_name,
                 "vehicle_display_name": vehicle_display_name,
                 "vehicle_capacity_kg": vehicle_capacity_kg,
+                "vehicle_spec_label": f"{vehicle_display_name} / {vehicle_capacity_kg / 1000.0:.1f} t",
                 "cold_start_g": vehicle_params.get("cold_start_g", 0),
                 "route": route,
                 "visits": [],
@@ -888,6 +1027,38 @@ def solve_multi_depot_routes(
             route_results.append(route_info)
             depot_route_records.append(route_info)
             routes.append(route)
+            trunk_routes.append(
+                {
+                    "depot_name": depot_name,
+                    "vehicle_name": route_info["vehicle_name"],
+                    "vehicle_type_id": vehicle_type_id,
+                    "vehicle_display_name": vehicle_display_name,
+                    "vehicle_capacity_kg": vehicle_capacity_kg,
+                    "round_trip_distance_km": round(trunk_one_way_km * 2, 2),
+                    "carbon_kg": route_info["trunk_carbon_kg"],
+                    "served_venues": len(route_info["visits"]),
+                    "total_load_kg": round(float(route_info.get("total_load_kg", 0) or 0), 1),
+                }
+            )
+
+        remaining_fleet = _consume_used_fleet(remaining_fleet, solver_result)
+        remaining_fleet_summary = build_configured_fleet_summary(
+            remaining_fleet,
+            name_resolver=display_vehicle_name,
+        )
+        depot_solver_meta.append(
+            {
+                "depot_name": depot_name,
+                "num_vehicles_used": int(solver_result.get("num_vehicles_used", 0) or 0),
+                "fleet_used_by_type": dict(solver_result.get("fleet_used_by_type", {}) or {}),
+                "fleet_used_by_type_capacity": local_fleet_used_summary,
+                "fleet_used_summary_text": format_fleet_mix_text(local_fleet_used_summary),
+                "remaining_fleet_by_type_capacity": remaining_fleet_summary,
+                "remaining_fleet_summary_text": format_fleet_mix_text(remaining_fleet_summary),
+                "refinement_meta": dict(solver_result.get("refinement_meta", {}) or {}),
+                "cost_model": str(solver_result.get("cost_model") or ""),
+            }
+        )
 
         if depot_idx < len(updated_depot_results):
             updated_depot_results[depot_idx]["trunk_distance_km"] = round(
@@ -900,8 +1071,49 @@ def solve_multi_depot_routes(
             )
             updated_depot_results[depot_idx]["trunk_trip_count"] = len(depot_route_records)
             updated_depot_results[depot_idx]["route_count"] = len(depot_route_records)
+            updated_depot_results[depot_idx]["allocated_vehicle_count"] = len(depot_route_records)
+            updated_depot_results[depot_idx]["fleet_used_by_type"] = dict(solver_result.get("fleet_used_by_type", {}) or {})
+            updated_depot_results[depot_idx]["fleet_used_by_type_capacity"] = local_fleet_used_summary
+            updated_depot_results[depot_idx]["fleet_used_summary_text"] = format_fleet_mix_text(local_fleet_used_summary)
+            updated_depot_results[depot_idx]["remaining_fleet_by_type_capacity"] = remaining_fleet_summary
+            updated_depot_results[depot_idx]["remaining_fleet_summary_text"] = format_fleet_mix_text(remaining_fleet_summary)
+            updated_depot_results[depot_idx]["solver_refinement_meta"] = dict(solver_result.get("refinement_meta", {}) or {})
+            updated_depot_results[depot_idx]["cost_model"] = str(solver_result.get("cost_model") or "")
 
-    return route_results, trunk_routes, routes, updated_depot_results
+    fleet_used_by_type_capacity = build_route_fleet_summary(
+        route_results,
+        name_resolver=display_vehicle_name,
+    )
+    remaining_fleet_by_type_capacity = build_configured_fleet_summary(
+        remaining_fleet,
+        name_resolver=display_vehicle_name,
+    )
+    multi_depot_solver_result = {
+        "success": True,
+        "routes": routes,
+        "route_vehicle_ids": [],
+        "num_vehicles_pool": sum(int(vehicle.get("count_max", vehicle.get("count", 0)) or 0) for vehicle in normalized_fleet),
+        "num_vehicles_used": len(route_results),
+        "vehicle_used_flags": [],
+        "vehicle_types": [],
+        "vehicle_capacities_kg": [],
+        "active_vehicle_ids": [],
+        "fleet_used_by_type": build_count_by_type(fleet_used_by_type_capacity),
+        "fleet_used_by_type_capacity": fleet_used_by_type_capacity,
+        "remaining_fleet_by_type": build_count_by_type(remaining_fleet_by_type_capacity),
+        "remaining_fleet_by_type_capacity": remaining_fleet_by_type_capacity,
+        "cost_model": "fixed cold-start carbon + proxy arc carbon cost (grams CO2 integer) within per-depot OR-Tools decomposition",
+        "refinement_meta": {
+            "objective_model": "Per-depot OR-Tools heterogeneous fleet proxy arc carbon + exact-carbon local refinement",
+            "refinement_applied": any(
+                bool((item.get("refinement_meta", {}) or {}).get("refinement_applied"))
+                for item in depot_solver_meta
+            ),
+            "depot_solver_meta": depot_solver_meta,
+        },
+    }
+
+    return route_results, trunk_routes, routes, updated_depot_results, multi_depot_solver_result
 
 
 def reset_path_opt_state() -> None:
@@ -1010,7 +1222,7 @@ with st.container(key="path-opt-check-card"):
 
 with st.container(key="path-opt-summary-card"):
     st.markdown("### 已满足执行条件")
-    col_s1, col_s2, col_s3, col_s4 = st.columns([5, 3, 6, 2])
+    col_s1, col_s2, col_s3 = st.columns([5, 3, 6], gap="large", vertical_alignment="center")
     with col_s1:
         warehouse_address = warehouse.get("address", "未设置")
         st.metric("总仓地址", warehouse_address[:15] + "..." if len(warehouse_address) > 15 else warehouse_address)
@@ -1023,8 +1235,6 @@ with st.container(key="path-opt-summary-card"):
             if int(v.get("count_max", v.get("count", 0)) or 0) > 0
         )
         st.metric("车队配置", vehicle_summary[:24] + "..." if len(vehicle_summary) > 24 else vehicle_summary)
-    with col_s4:
-        st.metric("环境参数", environment_summary)
 
     st.caption(f"当前车队满载总运力：{total_fleet_capacity_kg:,.0f} kg")
 
@@ -1224,7 +1434,7 @@ with st.container(key="path-opt-exec-card"):
             if not use_multi_depot:
                 route_results = []
             if use_multi_depot:
-                route_results, trunk_routes, routes, depot_results = solve_multi_depot_routes(
+                route_results, trunk_routes, routes, depot_results, solver_result = solve_multi_depot_routes(
                     warehouse=warehouse,
                     venue_nodes=venue_nodes,
                     demands=demands,
@@ -1235,13 +1445,6 @@ with st.container(key="path-opt-exec-card"):
                     season=g_season,
                     h2_source=g_h2_source,
                 )
-                solver_result = {
-                    "success": True,
-                    "routes": [],
-                    "route_vehicle_ids": [],
-                    "vehicle_types": [],
-                    "vehicle_capacities_kg": [],
-                }
             else:
                 solver_result = solve_fsmvrp_ortools(
                     distance_matrix_km=distance_matrix,
@@ -1278,6 +1481,7 @@ with st.container(key="path-opt-exec-card"):
                     "vehicle_type": vehicle_display_name,
                     "vehicle_display_name": vehicle_display_name,
                     "vehicle_capacity_kg": vehicle_capacity_kg,
+                    "vehicle_spec_label": f"{vehicle_display_name} / {vehicle_capacity_kg / 1000.0:.1f} t",
                     "cold_start_g": vehicle_params.get("cold_start_g", 0),
                     "route": route,
                     "visits": [],
@@ -1340,6 +1544,7 @@ with st.container(key="path-opt-exec-card"):
             trunk_distance_km = sum(route.get("trunk_distance_km", 0) for route in route_results)
             trunk_carbon = sum(route.get("trunk_carbon_kg", 0) for route in route_results)
             optimized_carbon = sum(route.get("total_carbon_kg", 0) for route in route_results)
+            refinement_meta = solver_result.get("refinement_meta") if isinstance(solver_result, dict) else None
 
             used_vehicle_type_ids = sorted({route["vehicle_type_id"] for route in route_results})
             result_vehicle_type_id = used_vehicle_type_ids[0] if len(used_vehicle_type_ids) == 1 else "mixed"
@@ -1362,6 +1567,35 @@ with st.container(key="path-opt-exec-card"):
             baseline_carbon = float(baseline_scenario.get("total_emission", 0) or 0)
             baseline_distance = float(baseline_scenario.get("total_distance_km", 0) or 0)
             reduction_pct = ((baseline_carbon - optimized_carbon) / baseline_carbon * 100) if baseline_carbon > 0 else 0.0
+            configured_fleet_by_type_capacity = list(fleet_snapshot.get("fleet_config_by_type_capacity", []) or [])
+            configured_fleet_by_type = dict(fleet_snapshot.get("fleet_config_by_type", {}) or {})
+            solver_fleet_used_by_type_capacity = list(solver_result.get("fleet_used_by_type_capacity", []) or [])
+            fleet_used_by_type_capacity = build_route_fleet_summary(
+                route_results,
+                name_resolver=display_vehicle_name,
+            )
+            if not fleet_used_by_type_capacity:
+                fleet_used_by_type_capacity = solver_fleet_used_by_type_capacity
+            fleet_used_by_type = build_count_by_type(fleet_used_by_type_capacity)
+            remaining_fleet_by_type_capacity = list(solver_result.get("remaining_fleet_by_type_capacity", []) or [])
+            if not remaining_fleet_by_type_capacity and not use_multi_depot:
+                try:
+                    remaining_fleet_by_type_capacity = build_configured_fleet_summary(
+                        _consume_used_fleet(_clone_normalized_fleet(normalized_fleet), solver_result),
+                        name_resolver=display_vehicle_name,
+                    )
+                except Exception:
+                    remaining_fleet_by_type_capacity = []
+            remaining_fleet_by_type = dict(
+                solver_result.get("remaining_fleet_by_type", {}) or build_count_by_type(remaining_fleet_by_type_capacity)
+            )
+            active_vehicle_ids = list(solver_result.get("active_vehicle_ids", []) or [])
+            vehicle_used_flags = list(solver_result.get("vehicle_used_flags", []) or [])
+            num_vehicles_pool = int(solver_result.get("num_vehicles_pool", total_vehicles) or total_vehicles)
+            cost_model = str(
+                solver_result.get("cost_model")
+                or "fixed cold-start carbon + proxy arc carbon cost (grams CO2 integer)"
+            )
 
             optimization_results = {
                 "route_results": route_results,
@@ -1376,19 +1610,34 @@ with st.container(key="path-opt-exec-card"):
                 "terminal_emission": terminal_carbon,
                 "trunk_emission": trunk_carbon,
                 "num_vehicles_used": len(route_results),
-                "optimization_method": "OR-Tools FSMVRP",
+                "num_vehicles_pool": num_vehicles_pool,
+                "optimization_method": "OR-Tools heterogeneous fleet + fixed cold-start carbon + proxy arc carbon + exact-carbon local refinement",
                 "distance_method": distance_method,
                 "clustering_method": clustering_method,
+                "cost_model": cost_model,
                 "vehicle_type_id": result_vehicle_type_id,
                 "vehicle_type": result_vehicle_display_name,
                 "vehicle_display_name": result_vehicle_display_name,
                 "vehicle_capacity_kg": max((route["vehicle_capacity_kg"] for route in route_results), default=0),
                 "used_vehicle_type_ids": used_vehicle_type_ids,
+                "active_vehicle_ids": active_vehicle_ids,
+                "vehicle_used_flags": vehicle_used_flags,
+                "configured_fleet_by_type": configured_fleet_by_type,
+                "configured_fleet_by_type_capacity": configured_fleet_by_type_capacity,
+                "configured_fleet_summary_text": format_fleet_mix_text(configured_fleet_by_type_capacity),
+                "fleet_used_by_type": fleet_used_by_type,
+                "fleet_used_by_type_capacity": fleet_used_by_type_capacity,
+                "solver_fleet_used_by_type_capacity": solver_fleet_used_by_type_capacity,
+                "fleet_used_summary_text": format_fleet_mix_text(fleet_used_by_type_capacity),
+                "remaining_fleet_by_type": remaining_fleet_by_type,
+                "remaining_fleet_by_type_capacity": remaining_fleet_by_type_capacity,
+                "remaining_fleet_summary_text": format_fleet_mix_text(remaining_fleet_by_type_capacity),
                 "nodes": nodes,
                 "routes": routes,
                 "demands": demands,
                 "depot_results": depot_results,
                 "comparison_scenarios": comparison_scenarios,
+                "solver_refinement_meta": refinement_meta,
                 "environment_context": dict(saved_vehicle_environment_config),
                 "season": g_season,
                 "h2_source": g_h2_source,
@@ -1434,7 +1683,26 @@ if results:
 
         if depot_results_list:
             st.subheader("中转仓分析结果")
-            st.dataframe(pd.DataFrame(depot_results_list), width="stretch", hide_index=True)
+            st.dataframe(build_depot_results_dataframe(depot_results_list), width="stretch", hide_index=True)
+
+        fleet_config_df = build_fleet_summary_dataframe(
+            list(results.get("configured_fleet_by_type_capacity", []) or []),
+            count_label="配置数量(辆)",
+        )
+        fleet_used_df = build_fleet_summary_dataframe(
+            list(results.get("fleet_used_by_type_capacity", []) or []),
+            count_label="实际用车(辆)",
+        )
+        if not fleet_used_df.empty or not fleet_config_df.empty:
+            fleet_col1, fleet_col2 = st.columns(2)
+            with fleet_col1:
+                st.subheader("车队配置")
+                if not fleet_config_df.empty:
+                    st.dataframe(fleet_config_df, width="stretch", hide_index=True)
+            with fleet_col2:
+                st.subheader("实际用车")
+                if not fleet_used_df.empty:
+                    st.dataframe(fleet_used_df, width="stretch", hide_index=True)
 
         tab_map, tab_table = st.tabs(["路线地图", "车辆调度详情"])
 

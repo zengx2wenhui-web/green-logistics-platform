@@ -23,6 +23,7 @@ from pages._dashboard_shared import (
     tune_bar_value_labels,
 )
 from pages._route_analysis_shared import (
+    build_fleet_summary_dataframe,
     build_route_dispatch_dataframe,
     build_route_map,
     build_route_overview_dataframe,
@@ -202,9 +203,30 @@ def build_scenario_efficiency_dataframe(comparison_scenarios: list[dict]) -> pd.
                 "碳排效率(kg/km)": round(total_emission / total_distance, 4) if total_distance > 0 else 0.0,
                 "单车平均碳排(kg/车)": round(total_emission / num_vehicles, 2) if num_vehicles > 0 else 0.0,
                 "干线碳排占比(%)": round(trunk_emission / total_emission * 100, 1) if total_emission > 0 else 0.0,
+                "车队构成": str(scenario.get("fleet_mix_text") or ""),
             }
         )
     return pd.DataFrame(rows)
+
+
+def attach_route_capacity_column(df: pd.DataFrame, route_results: list[dict]) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    enriched = df.copy()
+    capacities = []
+    for route_result in route_results[: len(enriched)]:
+        try:
+            capacity_ton = round(float(route_result.get("vehicle_capacity_kg", 0) or 0) / 1000.0, 2)
+        except (TypeError, ValueError):
+            capacity_ton = 0.0
+        capacities.append(capacity_ton if capacity_ton > 0 else None)
+
+    while len(capacities) < len(enriched):
+        capacities.append(None)
+
+    enriched["单车载重上限(吨/辆)"] = capacities
+    return enriched
 
 
 def build_analysis_insights(
@@ -243,7 +265,7 @@ st.set_page_config(page_title="碳排放分析", page_icon="🌿", layout="wide"
 inject_sidebar_navigation_label()
 inject_base_style()
 inject_green_dashboard_style("carbon-analysis")
-render_sidebar_navigation()
+render_sidebar_navigation("pages/5_carbon_analysis.py")
 render_top_nav(
     tabs=[
         ("分析摘要", "sec-summary"),
@@ -287,6 +309,14 @@ sensitivity_df = build_sensitivity_dataframe(actual_total_distance, total_demand
 driver_df = build_reduction_driver_dataframe(comparison_scenarios)
 efficiency_df = build_scenario_efficiency_dataframe(comparison_scenarios)
 insights = build_analysis_insights(driver_df, efficiency_df, baseline_emission, actual_total_emission)
+configured_fleet_df = build_fleet_summary_dataframe(
+    list(results.get("configured_fleet_by_type_capacity", []) or []),
+    count_label="配置数量(辆)",
+)
+used_fleet_df = build_fleet_summary_dataframe(
+    list(results.get("fleet_used_by_type_capacity", []) or []),
+    count_label="实际用车(辆)",
+)
 
 primary_driver = driver_df.sort_values("减排量(kg CO2)", ascending=False).iloc[0].to_dict() if not driver_df.empty else None
 
@@ -301,8 +331,18 @@ active_scenario = get_scenario_record(comparison_scenarios, selected_scenario_id
 active_route_results = list(active_scenario.get("route_results", []) or [])
 active_depot_results = list(active_scenario.get("depot_results", []) or [])
 active_route_context = build_route_context(nodes, active_depot_results)
-active_route_df = build_route_overview_dataframe(active_route_results, active_route_context)
-active_dispatch_df = build_route_dispatch_dataframe(active_route_results, active_route_context)
+active_route_df = attach_route_capacity_column(
+    build_route_overview_dataframe(active_route_results, active_route_context),
+    active_route_results,
+)
+active_dispatch_df = attach_route_capacity_column(
+    build_route_dispatch_dataframe(active_route_results, active_route_context),
+    active_route_results,
+)
+active_fleet_df = build_fleet_summary_dataframe(
+    list(active_scenario.get("fleet_used_by_type_capacity", []) or []),
+    count_label="实际用车(辆)",
+)
 active_summary_df = scenario_df[scenario_df["方案ID"] == str(active_scenario.get("id") or "")]
 active_summary_row = active_summary_df.iloc[0].to_dict() if not active_summary_df.empty else {}
 
@@ -324,7 +364,21 @@ with st.container(key="carbon-analysis-card-summary"):
 
     render_scenario_triptych(scenario_df)
 
-    insight_col1, insight_col2 = st.columns([1.02, 0.98])
+    fleet_col1, fleet_col2 = st.columns(2)
+    with fleet_col1:
+        st.markdown("#### 车队配置")
+        if not configured_fleet_df.empty:
+            st.dataframe(configured_fleet_df, hide_index=True, width="stretch")
+        else:
+            st.info("当前结果未记录车队配置摘要。")
+    with fleet_col2:
+        st.markdown("#### 实际用车")
+        if not used_fleet_df.empty:
+            st.dataframe(used_fleet_df, hide_index=True, width="stretch")
+        else:
+            st.info("当前结果未记录实际用车摘要。")
+
+    insight_col1, insight_col2 = st.columns([1.02, 0.98], gap="large", vertical_alignment="center")
     with insight_col1:
         fig_driver = px.bar(
             driver_df.sort_values("减排量(kg CO2)", ascending=True),
@@ -345,7 +399,7 @@ with st.container(key="carbon-analysis-card-summary"):
                 st.markdown(f"- {insight}")
             if not efficiency_df.empty:
                 st.dataframe(
-                    efficiency_df[["方案", "碳排效率(kg/km)", "单车平均碳排(kg/车)", "干线碳排占比(%)"]],
+                    efficiency_df[["方案", "碳排效率(kg/km)", "单车平均碳排(kg/车)", "干线碳排占比(%)", "车队构成"]],
                     hide_index=True,
                     width="stretch",
                 )
@@ -353,7 +407,7 @@ with st.container(key="carbon-analysis-card-summary"):
 anchor("sec-analysis")
 with st.container(key="carbon-analysis-card-compare"):
     st.subheader("三方案对比")
-    compare_col1, compare_col2 = st.columns(2)
+    compare_col1, compare_col2 = st.columns(2, gap="large", vertical_alignment="center")
     with compare_col1:
         st.plotly_chart(
             build_scenario_emission_figure(scenario_df, title="三方案综合碳排对比"),
@@ -368,7 +422,7 @@ with st.container(key="carbon-analysis-card-compare"):
         )
         apply_green_chart_theme(
             fig_breakdown,
-            height=360,
+            height=410,
             showlegend=True,
             legend_x=0.5,
             legend_y=-0.2,
@@ -378,7 +432,7 @@ with st.container(key="carbon-analysis-card-compare"):
         )
         st.plotly_chart(fig_breakdown, width="stretch")
 
-    efficiency_col1, efficiency_col2 = st.columns([0.95, 1.05])
+    efficiency_col1, efficiency_col2 = st.columns([0.95, 1.05], gap="large", vertical_alignment="center")
     with efficiency_col1:
         fig_efficiency = px.bar(
             efficiency_df,
@@ -403,6 +457,7 @@ with st.container(key="carbon-analysis-card-compare"):
                     "总距离(km)",
                     "车辆数",
                     "中转枢纽数",
+                    "车队构成",
                 ]
             ],
             hide_index=True,
@@ -423,8 +478,18 @@ with st.container(key="carbon-analysis-card-routes"):
     active_route_results = list(active_scenario.get("route_results", []) or [])
     active_depot_results = list(active_scenario.get("depot_results", []) or [])
     active_route_context = build_route_context(nodes, active_depot_results)
-    active_route_df = build_route_overview_dataframe(active_route_results, active_route_context)
-    active_dispatch_df = build_route_dispatch_dataframe(active_route_results, active_route_context)
+    active_route_df = attach_route_capacity_column(
+        build_route_overview_dataframe(active_route_results, active_route_context),
+        active_route_results,
+    )
+    active_dispatch_df = attach_route_capacity_column(
+        build_route_dispatch_dataframe(active_route_results, active_route_context),
+        active_route_results,
+    )
+    active_fleet_df = build_fleet_summary_dataframe(
+        list(active_scenario.get("fleet_used_by_type_capacity", []) or []),
+        count_label="实际用车(辆)",
+    )
     active_summary_df = scenario_df[scenario_df["方案ID"] == str(active_scenario.get("id") or "")]
     active_summary_row = active_summary_df.iloc[0].to_dict() if not active_summary_df.empty else {}
 
@@ -440,6 +505,10 @@ with st.container(key="carbon-analysis-card-routes"):
     with route_metric_col4:
         st.metric("当前方案枢纽数", f"{int(active_summary_row.get('中转枢纽数', 0) or 0)} 个")
 
+    if not active_fleet_df.empty:
+        st.markdown("#### 当前方案异构车队构成")
+        st.dataframe(active_fleet_df, hide_index=True, width="stretch")
+
     route_tab_map, route_tab_summary, route_tab_segments = st.tabs(["地图展示", "路线汇总", "分段明细"])
 
     with route_tab_map:
@@ -450,7 +519,7 @@ with st.container(key="carbon-analysis-card-routes"):
             st.info("当前方案没有可展示的路线地图。")
 
     with route_tab_summary:
-        summary_view_col1, summary_view_col2 = st.columns([1.0, 1.0])
+        summary_view_col1, summary_view_col2 = st.columns([1.0, 1.0], gap="large", vertical_alignment="center")
         with summary_view_col1:
             if not active_route_df.empty:
                 fig_route = px.bar(
@@ -469,7 +538,7 @@ with st.container(key="carbon-analysis-card-routes"):
             if not active_dispatch_df.empty:
                 st.dataframe(
                     active_dispatch_df[
-                        ["路线编号", "车辆", "车型", "场馆数", "总装载(kg)", "总距离(km)", "总碳排放(kg CO2)"]
+                        ["路线编号", "车辆", "车型", "单车载重上限(吨/辆)", "场馆数", "总装载(kg)", "总距离(km)", "总碳排放(kg CO2)"]
                     ],
                     hide_index=True,
                     width="stretch",
@@ -484,14 +553,17 @@ with st.container(key="carbon-analysis-card-routes"):
                 segment_rows = build_route_segment_rows(route_result, active_route_context)
                 with st.expander(f"{route_row.get('路线编号', f'路线{idx}')}：{route_row.get('车辆', route_result.get('vehicle_name', f'车辆{idx}'))}", expanded=False):
                     st.markdown(f"**路线** {route_row.get('路线', '--')}")
-                    seg_metric_col1, seg_metric_col2, seg_metric_col3, seg_metric_col4 = st.columns(4)
+                    seg_metric_col1, seg_metric_col2, seg_metric_col3, seg_metric_col4, seg_metric_col5 = st.columns(5)
                     with seg_metric_col1:
                         st.metric("总装载量", f"{float(route_result.get('total_load_kg', 0) or 0):.1f} kg")
                     with seg_metric_col2:
-                        st.metric("总距离", f"{float(route_result.get('total_distance_km', 0) or 0):.2f} km")
+                        capacity_ton = float(route_row.get('单车载重上限(吨/辆)', 0) or 0)
+                        st.metric("单车载重上限", f"{capacity_ton:.1f} 吨" if capacity_ton > 0 else "--")
                     with seg_metric_col3:
-                        st.metric("总碳排放", f"{float(route_result.get('total_carbon_kg', 0) or 0):.2f} kg CO2")
+                        st.metric("总距离", f"{float(route_result.get('total_distance_km', 0) or 0):.2f} km")
                     with seg_metric_col4:
+                        st.metric("总碳排放", f"{float(route_result.get('total_carbon_kg', 0) or 0):.2f} kg CO2")
+                    with seg_metric_col5:
                         st.metric("碳排效率", f"{float(route_row.get('碳排效率(kg/km)', 0) or 0):.4f} kg/km")
 
                     if segment_rows:
@@ -532,7 +604,7 @@ with st.container(key="carbon-analysis-card-routes"):
 anchor("sec-simulation")
 with st.container(key="carbon-analysis-card-simulation"):
     st.subheader("车型模拟")
-    sim_col1, sim_col2 = st.columns(2)
+    sim_col1, sim_col2 = st.columns(2, gap="large", vertical_alignment="center")
     with sim_col1:
         fig_factor = px.bar(
             vehicle_factor_df,

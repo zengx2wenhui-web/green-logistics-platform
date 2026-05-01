@@ -94,7 +94,7 @@ st.set_page_config(page_title="碳排放概览", page_icon="🌍", layout="wide"
 inject_sidebar_navigation_label()
 inject_base_style()
 inject_green_dashboard_style("carbon-overview")
-render_sidebar_navigation()
+render_sidebar_navigation("pages/6_carbon_overview.py")
 
 result = st.session_state.get("optimization_results") or st.session_state.get("results")
 vehicles = st.session_state.get("vehicles", [])

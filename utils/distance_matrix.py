@@ -12,7 +12,8 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # 缓存数据库路径
-_CACHE_DB_PATH: Path = Path("data/cache/distance_cache.db")
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_CACHE_DB_PATH: Path = _PROJECT_ROOT / "data" / "cache" / "distance_cache.db"
 
 # 模块级单例连接
 _db_conn: Optional[sqlite3.Connection] = None

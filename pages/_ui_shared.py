@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
+import sys
 
 import streamlit as st
 
@@ -153,6 +154,40 @@ def is_data_saved(data_key: str) -> bool:
 
 def get_data_status_label(data_key: str) -> str:
     return _DATA_STATUS_LABELS.get(get_data_status(data_key), "未设置")
+
+
+def _normalize_page_path(page: str | None) -> str:
+    return str(page or "").strip().replace("\\", "/").lower()
+
+
+def _infer_current_page_path() -> str:
+    main_module = sys.modules.get("__main__")
+    main_file = getattr(main_module, "__file__", "") if main_module else ""
+    if not main_file:
+        return ""
+
+    try:
+        resolved_path = Path(main_file).resolve()
+        return str(resolved_path.relative_to(_APP_ROOT)).replace("\\", "/")
+    except Exception:
+        return str(main_file).replace("\\", "/")
+
+
+def _get_sidebar_nav_item_key(page: str) -> str:
+    normalized = _normalize_page_path(page)
+    slug_parts: list[str] = []
+    last_was_dash = False
+
+    for char in normalized:
+        if char.isalnum():
+            slug_parts.append(char)
+            last_was_dash = False
+        elif not last_was_dash:
+            slug_parts.append("-")
+            last_was_dash = True
+
+    slug = "".join(slug_parts).strip("-") or "home"
+    return f"glp-sidebar-nav-{slug}"
 
 
 def _format_sidebar_status_value(
@@ -351,7 +386,7 @@ def _get_sidebar_summary() -> dict[str, int | float | bool]:
     }
 
 
-def render_sidebar_navigation() -> None:
+def render_sidebar_navigation(current_page: str | None = None) -> None:
     """Render the app-style sidebar for Streamlit pages."""
     nav_pages = [
         ("首页", "app.py", _SIDEBAR_ICON_DIR / "首页.png"),
@@ -365,6 +400,8 @@ def render_sidebar_navigation() -> None:
         ("优化结果", "pages/8_results.py", _SIDEBAR_ICON_DIR / "优化结果.png"),
     ]
     summary = _get_sidebar_summary()
+    current_page_normalized = _normalize_page_path(current_page or _infer_current_page_path())
+    active_nav_key = ""
 
     with st.sidebar:
         logo_uri = _image_to_data_uri(_SIDEBAR_ICON_DIR / "logo.png")
@@ -382,12 +419,17 @@ def render_sidebar_navigation() -> None:
             )
 
         for label, page, icon_path in nav_pages:
-            row_icon, row_link = st.columns([0.22, 6.78], gap="small")
-            with row_icon:
-                if icon_path.exists():
-                    st.image(str(icon_path), width=17)
-            with row_link:
-                st.page_link(page, label=label)
+            nav_item_key = _get_sidebar_nav_item_key(page)
+            if _normalize_page_path(page) == current_page_normalized:
+                active_nav_key = nav_item_key
+
+            with st.container(key=nav_item_key):
+                row_icon, row_link = st.columns([0.22, 6.78], gap="small")
+                with row_icon:
+                    if icon_path.exists():
+                        st.image(str(icon_path), width=17)
+                with row_link:
+                    st.page_link(page, label=label)
 
         st.markdown('<div class="sidebar-status-title">数据状态</div>', unsafe_allow_html=True)
 
@@ -421,6 +463,24 @@ def render_sidebar_navigation() -> None:
                 """,
                 unsafe_allow_html=True,
             )
+
+    if active_nav_key:
+        st.markdown(
+            f"""
+            <style>
+            [data-testid="stSidebar"] .st-key-{active_nav_key} a {{
+                background: rgba(255, 255, 255, 0.13) !important;
+                border-left-color: #d7e8bf !important;
+            }}
+
+            [data-testid="stSidebar"] .st-key-{active_nav_key} a p,
+            [data-testid="stSidebar"] .st-key-{active_nav_key} a span {{
+                font-weight: 600 !important;
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
 
     st.html(
         r"""
@@ -461,7 +521,7 @@ def render_sidebar_navigation() -> None:
           };
 
           const getLinkMatchScore = (link, currentPath, currentHref, isHome) => {
-            const label = (link.querySelector("p")?.textContent || link.textContent || "").trim();
+            const label = (link.querySelector("p, span")?.textContent || link.textContent || "").trim();
             const aliases = routeAliases[label] || [];
             let score = 0;
 
@@ -498,7 +558,7 @@ def render_sidebar_navigation() -> None:
             }
 
             const links = Array.from(
-              sidebar.querySelectorAll('a[data-testid="stPageLink-NavLink"]')
+              sidebar.querySelectorAll('[class*="st-key-glp-sidebar-nav-"] a[href]')
             );
             if (!links.length) {
               return false;

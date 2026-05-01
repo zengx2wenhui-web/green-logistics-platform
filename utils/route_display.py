@@ -152,7 +152,14 @@ def _normalize_route_node(
 def _build_depot_node(depot: dict, index: int) -> dict[str, Any]:
     return _normalize_route_node(
         {
-            "name": depot.get("仓库名称") or depot.get("中转仓编号") or f"中转仓{index}",
+            "name": (
+                depot.get("仓库名称")
+                or depot.get("nearest_candidate_name")
+                or depot.get("中转仓名称")
+                or depot.get("warehouse_name")
+                or depot.get("中转仓编号")
+                or f"中转仓{index}"
+            ),
             "node_type": "depot",
             "lat": depot.get("纬度"),
             "lng": depot.get("经度"),

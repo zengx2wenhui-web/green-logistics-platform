@@ -1148,7 +1148,7 @@ def build_saved_summary_df(venue_names: list[str]) -> pd.DataFrame:
 st.set_page_config(page_title="物资需求", page_icon="", layout="wide", initial_sidebar_state="expanded")
 inject_sidebar_navigation_label()
 inject_base_style()
-render_sidebar_navigation()
+render_sidebar_navigation("pages/3_materials.py")
 init_state()
 
 venue_names = [venue["name"] for venue in st.session_state.get("venues", [])]

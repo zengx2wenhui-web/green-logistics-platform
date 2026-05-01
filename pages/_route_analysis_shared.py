@@ -22,6 +22,10 @@ POWER_TYPE_MAPPING = {
 }
 
 ROUTE_COLORS = ["#D94841", "#2F6BFF", "#2E9D52", "#8A46D8", "#F08C2B", "#D6336C", "#0F766E", "#2B8A3E"]
+COST_MODEL_DISPLAY_MAP = {
+    "fixed cold-start carbon + proxy arc carbon cost (grams CO2 integer)": "固定冷启动碳排 + 代理弧段碳成本（整数克 CO2）",
+    "fixed cold-start carbon + proxy arc carbon cost (grams CO2 integer) within per-depot OR-Tools decomposition": "固定冷启动碳排 + 代理弧段碳成本（按中转仓拆分的 OR-Tools 求解）",
+}
 
 
 def get_total_demand_value(demand_data: object) -> float:
@@ -146,6 +150,84 @@ def build_route_dispatch_dataframe(route_results: list[dict], route_context: dic
     return pd.DataFrame(rows)
 
 
+def build_fleet_summary_dataframe(
+    summary_rows: list[dict],
+    *,
+    count_label: str = "车辆数(辆)",
+) -> pd.DataFrame:
+    rows = []
+    for item in summary_rows or []:
+        vehicle_count = int(item.get("vehicle_count", 0) or 0)
+        vehicle_capacity_ton = float(item.get("vehicle_capacity_ton", 0) or 0)
+        total_capacity_ton = float(item.get("total_capacity_ton", vehicle_capacity_ton * vehicle_count) or 0)
+        if vehicle_count <= 0:
+            continue
+
+        rows.append(
+            {
+                "车型": str(item.get("vehicle_display_name", "") or item.get("vehicle_type_id", "") or "未知"),
+                "单车载重(吨/辆)": round(vehicle_capacity_ton, 2),
+                count_label: vehicle_count,
+                "总运力(吨)": round(total_capacity_ton, 2),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def build_fleet_composition_dataframe(
+    configured_rows: list[dict],
+    used_rows: list[dict],
+    *,
+    configured_count_label: str = "车队配置(辆)",
+    used_count_label: str = "实际用车(辆)",
+) -> pd.DataFrame:
+    rows_by_key: dict[tuple[str, str, float], dict[str, object]] = {}
+    ordered_keys: list[tuple[str, str, float]] = []
+
+    def _fleet_key(item: dict) -> tuple[str, str, float]:
+        vehicle_display_name = str(item.get("vehicle_display_name", "") or item.get("vehicle_type_id", "") or "未知")
+        vehicle_type_id = str(item.get("vehicle_type_id", "") or vehicle_display_name).strip()
+        vehicle_capacity_ton = round(float(item.get("vehicle_capacity_ton", 0) or 0), 2)
+        return (vehicle_type_id, vehicle_display_name, vehicle_capacity_ton)
+
+    def _ensure_row(item: dict) -> dict[str, object]:
+        key = _fleet_key(item)
+        if key not in rows_by_key:
+            ordered_keys.append(key)
+            rows_by_key[key] = {
+                "车型": key[1],
+                "单车载重(吨/辆)": key[2],
+                configured_count_label: 0,
+                used_count_label: 0,
+                "总运力(吨)": 0.0,
+            }
+        return rows_by_key[key]
+
+    for item in configured_rows or []:
+        vehicle_count = int(item.get("vehicle_count", 0) or 0)
+        if vehicle_count <= 0:
+            continue
+        row = _ensure_row(item)
+        vehicle_capacity_ton = float(item.get("vehicle_capacity_ton", 0) or 0)
+        total_capacity_ton = float(item.get("total_capacity_ton", vehicle_capacity_ton * vehicle_count) or 0)
+        row[configured_count_label] = vehicle_count
+        row["总运力(吨)"] = round(total_capacity_ton, 2)
+
+    for item in used_rows or []:
+        vehicle_count = int(item.get("vehicle_count", 0) or 0)
+        if vehicle_count <= 0:
+            continue
+        row = _ensure_row(item)
+        vehicle_capacity_ton = float(item.get("vehicle_capacity_ton", 0) or 0)
+        total_capacity_ton = float(item.get("total_capacity_ton", vehicle_capacity_ton * vehicle_count) or 0)
+        row[used_count_label] = vehicle_count
+        if not row["总运力(吨)"]:
+            row["总运力(吨)"] = round(total_capacity_ton, 2)
+
+    return pd.DataFrame([rows_by_key[key] for key in ordered_keys])
+
+
 def build_route_segment_rows(route_result: dict, route_context: dict) -> list[dict]:
     rows: list[dict] = []
     segments = route_result.get("segments", []) or []
@@ -172,6 +254,110 @@ def build_route_segment_rows(route_result: dict, route_context: dict) -> list[di
             }
         )
     return rows
+
+
+def _is_blank_display_value(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    return False
+
+
+def _get_depot_display_value(depot: dict, *keys: str) -> object:
+    for key in keys:
+        value = depot.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+    return None
+
+
+def get_depot_display_name(depot: dict, depot_index: int | None = None) -> str:
+    name = _get_depot_display_value(
+        depot,
+        "仓库名称",
+        "nearest_candidate_name",
+        "中转仓名称",
+        "warehouse_name",
+        "中转仓编号",
+    )
+    if name is not None:
+        return str(name)
+    if depot_index is None:
+        return "中转仓"
+    return f"中转仓{depot_index}"
+
+
+def _format_depot_cost_model(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return COST_MODEL_DISPLAY_MAP.get(text, text)
+
+
+def build_depot_results_dataframe(depot_results_list: list[dict]) -> pd.DataFrame:
+    if not depot_results_list:
+        return pd.DataFrame()
+
+    rows: list[dict[str, object]] = []
+    ordered_columns = [
+        "中转仓名称",
+        "省",
+        "市",
+        "经度",
+        "纬度",
+        "服务场馆数",
+        "服务场馆列表",
+        "物资总量(kg)",
+        "平均距离(km)",
+        "干线距离(km)",
+        "干线碳排(kg CO2)",
+        "干线趟次",
+        "配送路线数",
+        "分配车辆数",
+        "已用车队",
+        "剩余车队",
+    ]
+
+    for depot_index, depot in enumerate(depot_results_list, start=1):
+        average_distance = _get_depot_display_value(depot, "平均距离(km)")
+        if isinstance(average_distance, str) and average_distance.strip().upper() == "N/A":
+            average_distance = "暂无"
+
+        rows.append(
+            {
+                "中转仓名称": get_depot_display_name(depot, depot_index),
+                "省": _get_depot_display_value(depot, "省", "province"),
+                "市": _get_depot_display_value(depot, "市", "city"),
+                "经度": _get_depot_display_value(depot, "经度", "lng"),
+                "纬度": _get_depot_display_value(depot, "纬度", "lat"),
+                "服务场馆数": _get_depot_display_value(depot, "服务场馆数"),
+                "服务场馆列表": _get_depot_display_value(depot, "服务场馆列表"),
+                "物资总量(kg)": _get_depot_display_value(depot, "物资总量(kg)", "weight"),
+                "平均距离(km)": average_distance,
+                "干线距离(km)": _get_depot_display_value(depot, "干线距离(km)", "trunk_distance_km"),
+                "干线碳排(kg CO2)": _get_depot_display_value(depot, "干线碳排(kg CO2)", "trunk_carbon_kg"),
+                "干线趟次": _get_depot_display_value(depot, "干线趟次", "trunk_trip_count"),
+                "配送路线数": _get_depot_display_value(depot, "配送路线数", "route_count"),
+                "分配车辆数": _get_depot_display_value(depot, "分配车辆数", "allocated_vehicle_count"),
+                "已用车队": _get_depot_display_value(depot, "已用车队", "fleet_used_summary_text"),
+                "剩余车队": _get_depot_display_value(depot, "剩余车队", "remaining_fleet_summary_text"),
+            }
+        )
+
+    dataframe = pd.DataFrame(rows)
+    visible_columns = []
+    for column in ordered_columns:
+        if column not in dataframe.columns:
+            continue
+        if dataframe[column].apply(_is_blank_display_value).all():
+            continue
+        visible_columns.append(column)
+
+    return dataframe[visible_columns]
 
 
 def build_route_map(
@@ -243,7 +429,7 @@ def build_route_map(
         depot_lng = depot.get("经度", depot.get("ç»åº¦", 0))
         if depot_lat is None or depot_lng is None:
             continue
-        depot_name = str(depot.get("中转仓名称") or depot.get("warehouse_name") or f"中转仓 {depot_index}")
+        depot_name = get_depot_display_name(depot, depot_index)
         folium.Marker(
             [depot_lat, depot_lng],
             popup=folium.Popup(f"<b>{depot_name}</b>", max_width=360),

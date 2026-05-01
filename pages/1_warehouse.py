@@ -299,7 +299,7 @@ else:
 
 inject_sidebar_navigation_label()
 inject_base_style()
-render_sidebar_navigation()
+render_sidebar_navigation("pages/1_warehouse.py")
 render_top_nav(
     tabs=[("仓库信息录入", "sec-form"), ("仓库地图位置", "sec-map"), ("快捷操作", "sec-actions")],
     active_idx=0,
